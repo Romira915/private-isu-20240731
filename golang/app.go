@@ -637,15 +637,24 @@ func getAccountName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := []Post{}
+	results := []PostRaw{}
 
-	err = db.Select(&results, "SELECT `id`, `user_id`, `body`, `mime`, `created_at` FROM `posts` WHERE `user_id` = ? ORDER BY `created_at` DESC", user.ID)
+	err = db.Select(&results, `SELECT p.id AS post_id, p.user_id AS user_id, p.mime, p.body, p.created_at AS post_created_at, u.account_name, u.created_at AS user_created_at
+                FROM posts as p FORCE INDEX (posts_user_id_created_at_idx)
+                    JOIN users as u ON p.user_id = u.id
+                WHERE p.user_id = ?
+                    AND u.del_flg = 0
+                ORDER BY p.created_at DESC
+                LIMIT ?`,
+		user.ID,
+		postsPerPage)
+
 	if err != nil {
 		log.Print(err)
 		return
 	}
 
-	posts, err := makePosts(results, getCSRFToken(r), false)
+	posts, err := makePosts2(results, getCSRFToken(r), false)
 	if err != nil {
 		log.Print(err)
 		return
@@ -693,6 +702,26 @@ func getAccountName(w http.ResponseWriter, r *http.Request) {
 		"imageURL": imageURL,
 	}
 
+	transratedPosts := []Post{}
+	for _, post := range posts {
+		var comments []Comment
+		for _, comment := range post.Comments {
+			comments = append(comments, comment.Comment)
+		}
+		newPost := Post{
+			ID:           post.Post.ID,
+			UserID:       post.Post.UserID,
+			Body:         post.Post.Body,
+			Mime:         post.Post.Mime,
+			CreatedAt:    post.Post.CreatedAt,
+			CommentCount: post.Comment_count,
+			Comments:     comments,
+			User:         post.User,
+			CSRFToken:    post.Csrf_token,
+		}
+		transratedPosts = append(transratedPosts, newPost)
+	}
+
 	template.Must(template.New("layout.html").Funcs(fmap).ParseFiles(
 		getTemplPath("layout.html"),
 		getTemplPath("user.html"),
@@ -705,7 +734,7 @@ func getAccountName(w http.ResponseWriter, r *http.Request) {
 		CommentCount   int
 		CommentedCount int
 		Me             User
-	}{posts, user, postCount, commentCount, commentedCount, me})
+	}{transratedPosts, user, postCount, commentCount, commentedCount, me})
 }
 
 func getPosts(w http.ResponseWriter, r *http.Request) {
@@ -726,14 +755,27 @@ func getPosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := []Post{}
-	err = db.Select(&results, "SELECT `id`, `user_id`, `body`, `mime`, `created_at` FROM `posts` WHERE `created_at` <= ? ORDER BY `created_at` DESC", t.Format(ISO8601Format))
+	results := []PostRaw{}
+	err = db.Select(&results, `
+			SELECT p.id         AS post_id,
+                   p.user_id    AS user_id,
+                   p.mime,
+                   p.body,
+                   p.created_at AS post_created_at,
+                   u.account_name,
+                   u.created_at AS user_created_at
+            FROM posts as p FORCE INDEX (posts_created_at_idx)
+                     JOIN users as u ON p.user_id = u.id
+            WHERE p.created_at <= ?
+              AND u.del_flg = 0
+            ORDER BY p.created_at DESC
+            LIMIT ?`, t.Format(ISO8601Format), postsPerPage)
 	if err != nil {
 		log.Print(err)
 		return
 	}
 
-	posts, err := makePosts(results, getCSRFToken(r), false)
+	posts, err := makePosts2(results, getCSRFToken(r), false)
 	if err != nil {
 		log.Print(err)
 		return
@@ -748,10 +790,30 @@ func getPosts(w http.ResponseWriter, r *http.Request) {
 		"imageURL": imageURL,
 	}
 
+	transratedPosts := []Post{}
+	for _, post := range posts {
+		var comments []Comment
+		for _, comment := range post.Comments {
+			comments = append(comments, comment.Comment)
+		}
+		newPost := Post{
+			ID:           post.Post.ID,
+			UserID:       post.Post.UserID,
+			Body:         post.Post.Body,
+			Mime:         post.Post.Mime,
+			CreatedAt:    post.Post.CreatedAt,
+			CommentCount: post.Comment_count,
+			Comments:     comments,
+			User:         post.User,
+			CSRFToken:    post.Csrf_token,
+		}
+		transratedPosts = append(transratedPosts, newPost)
+	}
+
 	template.Must(template.New("posts.html").Funcs(fmap).ParseFiles(
 		getTemplPath("posts.html"),
 		getTemplPath("post.html"),
-	)).Execute(w, posts)
+	)).Execute(w, transratedPosts)
 }
 
 func getPostsID(w http.ResponseWriter, r *http.Request) {
@@ -762,14 +824,30 @@ func getPostsID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := []Post{}
-	err = db.Select(&results, "SELECT * FROM `posts` WHERE `id` = ?", pid)
+	results := []PostRaw{}
+
+	err = db.Select(&results,
+		`SELECT p.id         AS post_id,
+                   p.user_id    AS user_id,
+                   p.mime,
+                   p.body,
+                   p.created_at AS post_created_at,
+                   u.account_name,
+                   u.created_at AS user_created_at
+            FROM posts as p FORCE INDEX (PRIMARY)
+                     JOIN users as u ON p.user_id = u.id
+            WHERE p.id = ?
+              AND u.del_flg = 0
+            ORDER BY p.created_at DESC
+            LIMIT ?`,
+		pid,
+		postsPerPage)
 	if err != nil {
 		log.Print(err)
 		return
 	}
 
-	posts, err := makePosts(results, getCSRFToken(r), true)
+	posts, err := makePosts2(results, getCSRFToken(r), true)
 	if err != nil {
 		log.Print(err)
 		return
@@ -788,6 +866,22 @@ func getPostsID(w http.ResponseWriter, r *http.Request) {
 		"imageURL": imageURL,
 	}
 
+	var comments []Comment
+	for _, comment := range p.Comments {
+		comments = append(comments, comment.Comment)
+	}
+	transratedPost := Post{
+		ID:           p.Post.ID,
+		UserID:       p.Post.UserID,
+		Body:         p.Post.Body,
+		Mime:         p.Post.Mime,
+		CreatedAt:    p.Post.CreatedAt,
+		CommentCount: p.Comment_count,
+		Comments:     comments,
+		User:         p.User,
+		CSRFToken:    p.Csrf_token,
+	}
+
 	template.Must(template.New("layout.html").Funcs(fmap).ParseFiles(
 		getTemplPath("layout.html"),
 		getTemplPath("post_id.html"),
@@ -795,7 +889,7 @@ func getPostsID(w http.ResponseWriter, r *http.Request) {
 	)).Execute(w, struct {
 		Post Post
 		Me   User
-	}{p, me})
+	}{transratedPost, me})
 }
 
 func postIndex(w http.ResponseWriter, r *http.Request) {
