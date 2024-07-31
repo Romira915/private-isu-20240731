@@ -57,6 +57,16 @@ type Post struct {
 	CSRFToken    string
 }
 
+type PostRaw struct {
+	PostID          int       `db:"post_id"`
+	UserID          int       `db:"user_id"`
+	Body            string    `db:"body"`
+	Mime            string    `db:"mime"`
+	PostCreatedAt   time.Time `db:"post_created_at"`
+	Account_name    string    `db:"account_name"`
+	User_created_at time.Time `db:"user_created_at"`
+}
+
 type Comment struct {
 	ID        int       `db:"id"`
 	PostID    int       `db:"post_id"`
@@ -64,6 +74,19 @@ type Comment struct {
 	Comment   string    `db:"comment"`
 	CreatedAt time.Time `db:"created_at"`
 	User      User
+}
+
+type GrantedInfoPost struct {
+	Post          Post
+	Comment_count int
+	Comments      []GrantedUserComment
+	User          User
+	Csrf_token    string
+}
+
+type GrantedUserComment struct {
+	Comment Comment
+	User    User
 }
 
 func init() {
@@ -217,6 +240,164 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 		if len(posts) >= postsPerPage {
 			break
 		}
+	}
+
+	return posts, nil
+}
+
+type CommentRaw struct {
+	Id               int       `db:"id"`
+	PostID           int       `db:"post_id"`
+	UserID           int       `db:"user_id"`
+	Comment          string    `db:"comment"`
+	CommentCreatedAt time.Time `db:"comment_created_at"`
+	AccountName      string    `db:"account_name"`
+	UserCreatedAt    time.Time `db:"user_created_at"`
+}
+
+func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]GrantedInfoPost, error) {
+	comments_raw := []CommentRaw{}
+	var post_ids []int
+	for _, post_raw := range post_raws {
+		post_ids = append(post_ids, post_raw.PostID)
+	}
+
+	if allComments {
+		query, args, err := sqlx.In(`SELECT ranked_comments.id,
+                           ranked_comments.post_id,
+                           ranked_comments.user_id,
+                           ranked_comments.comment,
+                           ranked_comments.created_at AS comment_created_at,
+                           u.account_name,
+                           u.created_at AS user_created_at
+                    FROM (SELECT *,
+                                 ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY created_at DESC) AS row_num
+                          FROM comments
+                          WHERE post_id IN (?)) AS ranked_comments
+                             JOIN users AS u ON ranked_comments.user_id = u.id
+                    WHERE u.del_flg = 0
+                    ORDER BY post_id, comment_created_at DESC`,
+			post_ids)
+		if err != nil {
+			log.Print(err)
+			return nil, err
+		}
+
+		query = db.Rebind(query)
+
+		err = db.Select(&comments_raw, query, args...)
+		if err != nil {
+			log.Print(err)
+			return nil, err
+		}
+	} else {
+		query, args, err := sqlx.In(`SELECT ranked_comments.id AS id,
+                           ranked_comments.post_id AS post_id,
+                           ranked_comments.user_id AS user_id,
+                           ranked_comments.comment AS comment,
+                           ranked_comments.created_at AS comment_created_at,
+                           u.account_name AS account_name,
+                           u.created_at AS user_created_at
+                    FROM (SELECT *,
+                                 ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY created_at DESC) AS row_num
+                          FROM comments
+                          WHERE post_id IN (?)) AS ranked_comments
+                             JOIN users AS u ON ranked_comments.user_id = u.id
+                    WHERE row_num <= 3
+                      AND u.del_flg = 0
+                    ORDER BY post_id, comment_created_at DESC`,
+			post_ids)
+		if err != nil {
+			log.Print(err)
+			return nil, err
+		}
+
+		query = db.Rebind(query)
+
+		err = db.Select(&comments_raw, query, args...)
+		if err != nil {
+			log.Print(err)
+			return nil, err
+		}
+	}
+
+	var comment_count_raw []struct {
+		Post_id       int `db:"post_id"`
+		Comment_count int `db:"comment_count"`
+	}
+	query, args, err := sqlx.In(`SELECT post_id, COUNT(*) AS comment_count
+            FROM comments
+            WHERE post_id IN (?)
+            GROUP BY post_id`,
+		post_ids)
+
+	if err != nil {
+		log.Print(err)
+		return nil, err
+	}
+
+	query = db.Rebind(query)
+
+	err = db.Select(&comment_count_raw, query, args...)
+	if err != nil {
+		log.Print(err)
+		return nil, err
+	}
+
+	var posts []GrantedInfoPost
+	for _, post_raw := range post_raws {
+		post := Post{
+			ID:           post_raw.PostID,
+			UserID:       post_raw.UserID,
+			Body:         post_raw.Body,
+			Mime:         post_raw.Mime,
+			CreatedAt:    post_raw.PostCreatedAt,
+			CommentCount: 0,
+			Comments:     []Comment{},
+			User:         User{},
+			CSRFToken:    csrfToken,
+		}
+		user := User{
+			ID:          post_raw.UserID,
+			AccountName: post_raw.Account_name,
+			CreatedAt:   post_raw.User_created_at,
+		}
+
+		var grantedUserComments []GrantedUserComment
+		for _, comment_raw := range comments_raw {
+			if post.ID == comment_raw.PostID {
+				comment := Comment{
+					ID:        comment_raw.Id,
+					PostID:    comment_raw.PostID,
+					UserID:    comment_raw.UserID,
+					Comment:   comment_raw.Comment,
+					CreatedAt: comment_raw.CommentCreatedAt,
+					User: User{
+						ID:          comment_raw.UserID,
+						AccountName: comment_raw.AccountName,
+						CreatedAt:   comment_raw.UserCreatedAt,
+					},
+				}
+				user := User{
+					ID:          comment_raw.UserID,
+					AccountName: comment_raw.AccountName,
+					CreatedAt:   comment_raw.UserCreatedAt,
+				}
+
+				grantedUserComments = append(grantedUserComments, GrantedUserComment{
+					Comment: comment,
+					User:    user,
+				})
+			}
+		}
+
+		posts = append(posts, GrantedInfoPost{
+			Post:          post,
+			Comment_count: len(comment_count_raw),
+			Comments:      grantedUserComments,
+			User:          user,
+			Csrf_token:    csrfToken,
+		})
 	}
 
 	return posts, nil
@@ -384,15 +565,21 @@ func getLogout(w http.ResponseWriter, r *http.Request) {
 func getIndex(w http.ResponseWriter, r *http.Request) {
 	me := getSessionUser(r)
 
-	results := []Post{}
+	results := []PostRaw{}
 
-	err := db.Select(&results, "SELECT `id`, `user_id`, `body`, `mime`, `created_at` FROM `posts` ORDER BY `created_at` DESC")
+	err := db.Select(&results,
+		`SELECT p.id AS post_id, p.user_id AS user_id, p.body, p.mime, p.created_at AS post_created_at, u.account_name AS account_name, u.created_at AS user_created_at
+		FROM posts as p FORCE INDEX (posts_created_at_idx) 
+			JOIN users as u ON p.user_id = u.id
+		WHERE u.del_flg = 0
+		ORDER BY p.created_at DESC LIMIT ?`,
+		postsPerPage)
 	if err != nil {
 		log.Print(err)
 		return
 	}
 
-	posts, err := makePosts(results, getCSRFToken(r), false)
+	posts, err := makePosts2(results, getCSRFToken(r), false)
 	if err != nil {
 		log.Print(err)
 		return
@@ -400,6 +587,26 @@ func getIndex(w http.ResponseWriter, r *http.Request) {
 
 	fmap := template.FuncMap{
 		"imageURL": imageURL,
+	}
+
+	transratedPosts := []Post{}
+	for _, post := range posts {
+		var comments []Comment
+		for _, comment := range post.Comments {
+			comments = append(comments, comment.Comment)
+		}
+		newPost := Post{
+			ID:           post.Post.ID,
+			UserID:       post.Post.UserID,
+			Body:         post.Post.Body,
+			Mime:         post.Post.Mime,
+			CreatedAt:    post.Post.CreatedAt,
+			CommentCount: post.Comment_count,
+			Comments:     comments,
+			User:         post.User,
+			CSRFToken:    post.Csrf_token,
+		}
+		transratedPosts = append(transratedPosts, newPost)
 	}
 
 	template.Must(template.New("layout.html").Funcs(fmap).ParseFiles(
@@ -412,7 +619,7 @@ func getIndex(w http.ResponseWriter, r *http.Request) {
 		Me        User
 		CSRFToken string
 		Flash     string
-	}{posts, me, getCSRFToken(r), getFlash(w, r, "notice")})
+	}{transratedPosts, me, getCSRFToken(r), getFlash(w, r, "notice")})
 }
 
 func getAccountName(w http.ResponseWriter, r *http.Request) {
