@@ -15,7 +15,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
+	"crypto/sha512"
+	"encoding/hex"
+	"fmt"
+	
 	"github.com/bradfitz/gomemcache/memcache"
 	gsm "github.com/bradleypeabody/gorilla-sessions-memcache"
 	"github.com/go-chi/chi/v5"
@@ -140,15 +143,11 @@ func escapeshellarg(arg string) string {
 }
 
 func digest(src string) string {
-	// opensslのバージョンによっては (stdin)= というのがつくので取る
-	out, err := exec.Command("/bin/bash", "-c", `printf "%s" `+escapeshellarg(src)+` | openssl dgst -sha512 | sed 's/^.*= //'`).Output()
-	if err != nil {
-		log.Print(err)
-		return ""
-	}
-
-	return strings.TrimSuffix(string(out), "\n")
+	hasher :=sha512.New()
+	hasher.Write([]byte(src))
+	return hex.EncodeToString(hasher.Sum(nil))
 }
+
 
 func calculateSalt(accountName string) string {
 	return digest(accountName)
@@ -954,7 +953,7 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 		query,
 		me.ID,
 		mime,
-		filedata,
+		0,
 		r.FormValue("body"),
 	)
 	if err != nil {
@@ -968,10 +967,35 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 画像ファイルを保存
+	var ext string
+	switch mime {
+	case "image/jpeg":
+		ext = "jpg"
+	case "image/png":
+		ext = "png"
+	case "image/gif":
+		ext = "gif"
+	default:
+		ext = ""
+	}
+	imageFilePath := fmt.Sprintf("%s/%d.%s", IMAGE_FILE_PATH, pid, ext)
+	out, err := os.Create(imageFilePath)
+	if err != nil {
+		log.Print(err)
+		return
+	}
+
+	_, err = io.Copy(out, file)
+	if err != nil {
+		log.Print(err)
+		return
+	}
+
 	http.Redirect(w, r, "/posts/"+strconv.FormatInt(pid, 10), http.StatusFound)
 }
 
-const IMAGE_FILE_PATH = "/home/isucon/private_isu/webapp/public/images"
+const IMAGE_FILE_PATH = "/home/isucon/private_isu/webapp/public/image"
 
 func getImage(w http.ResponseWriter, r *http.Request) {
 	pidStr := r.PathValue("id")
@@ -988,12 +1012,21 @@ func getImage(w http.ResponseWriter, r *http.Request) {
 
 	// 画像がファイルシステムに存在するかチェック
 	if _, err := os.Stat(imageFilePath); os.IsNotExist(err) {
+		log.Print("画像がファイルシステムに存在しない")
 		// DBから取得
 		var post Post
 		err = db.Get(&post, "SELECT imgdata, mime FROM posts WHERE id = ?", pid)
+		if err != nil {
+			log.Print(err)
+			return
+		}
 
 		// 画像をファイルに保存
 		err = os.WriteFile(imageFilePath, post.Imgdata, 0644)
+		if err != nil {
+			log.Print(err)
+			return
+		}
 	}
 
 	post := Post{}
