@@ -762,14 +762,30 @@ func getPostsID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := []Post{}
-	err = db.Select(&results, "SELECT * FROM `posts` WHERE `id` = ?", pid)
+	results := []PostRaw{}
+
+	err = db.Select(&results,
+		`SELECT p.id         AS post_id,
+                   p.user_id    AS user_id,
+                   p.mime,
+                   p.body,
+                   p.created_at AS post_created_at,
+                   u.account_name,
+                   u.created_at AS user_created_at
+            FROM posts as p FORCE INDEX (PRIMARY)
+                     JOIN users as u ON p.user_id = u.id
+            WHERE p.id = ?
+              AND u.del_flg = 0
+            ORDER BY p.created_at DESC
+            LIMIT ?`,
+		pid,
+		postsPerPage)
 	if err != nil {
 		log.Print(err)
 		return
 	}
 
-	posts, err := makePosts(results, getCSRFToken(r), true)
+	posts, err := makePosts2(results, getCSRFToken(r), true)
 	if err != nil {
 		log.Print(err)
 		return
@@ -788,6 +804,22 @@ func getPostsID(w http.ResponseWriter, r *http.Request) {
 		"imageURL": imageURL,
 	}
 
+	var comments []Comment
+	for _, comment := range p.Comments {
+		comments = append(comments, comment.Comment)
+	}
+	transratedPost := Post{
+		ID:           p.Post.ID,
+		UserID:       p.Post.UserID,
+		Body:         p.Post.Body,
+		Mime:         p.Post.Mime,
+		CreatedAt:    p.Post.CreatedAt,
+		CommentCount: p.Comment_count,
+		Comments:     comments,
+		User:         p.User,
+		CSRFToken:    p.Csrf_token,
+	}
+
 	template.Must(template.New("layout.html").Funcs(fmap).ParseFiles(
 		getTemplPath("layout.html"),
 		getTemplPath("post_id.html"),
@@ -795,7 +827,7 @@ func getPostsID(w http.ResponseWriter, r *http.Request) {
 	)).Execute(w, struct {
 		Post Post
 		Me   User
-	}{p, me})
+	}{transratedPost, me})
 }
 
 func postIndex(w http.ResponseWriter, r *http.Request) {
