@@ -979,7 +979,7 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/posts/"+strconv.FormatInt(pid, 10), http.StatusFound)
 }
 
-const IMAGE_FILE_PATH = "/home/isucon/private_isu/webapp/public/images"
+const IMAGE_FILE_PATH = "/home/isucon/private_isu/webapp/public/image"
 
 func getImage(w http.ResponseWriter, r *http.Request) {
 	pidStr := r.PathValue("id")
