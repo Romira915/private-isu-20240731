@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -683,21 +682,17 @@ func getImage(w http.ResponseWriter, r *http.Request) {
 
 	ext := r.PathValue("ext")
 
-	// 画像ファイルが存在しない場合はDBから取得して保存
+	// 画像ファイルのパス
 	imageFilePath := fmt.Sprintf("%s/%d.%s", IMAGE_FILE_PATH, pid, ext)
 
+	// 画像がファイルシステムに存在するかチェック
 	if _, err := os.Stat(imageFilePath); os.IsNotExist(err) {
-		var imageData []byte
-		query := "SELECT imgdata FROM posts WHERE id = ?"
-		row := db.QueryRow(query, pid)
+		// DBから取得
+		var post Post
+		err = db.Get(&post, "SELECT imgdata, mime FROM posts WHERE id = ?", pid)
 
-		if err := row.Scan(&imageData); err != nil {
-			return
-		}
-
-		if err := ioutil.WriteFile(imageFilePath, imageData, 0644); err != nil {
-			return
-		}
+		// 画像をファイルに保存
+		err = os.WriteFile(imageFilePath, post.Imgdata, 0644)
 	}
 
 	post := Post{}
