@@ -259,6 +259,7 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 	for _, post_raw := range post_raws {
 		post_ids = append(post_ids, post_raw.PostID)
 	}
+	log.Print(post_ids)
 
 	if allComments {
 		query, args, err := sqlx.In(`SELECT ranked_comments.id,
