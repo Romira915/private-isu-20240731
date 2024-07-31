@@ -670,6 +670,8 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/posts/"+strconv.FormatInt(pid, 10), http.StatusFound)
 }
 
+const IMAGE_FILE_PATH = "/home/isucon/private_isu/webapp/public/images"
+
 func getImage(w http.ResponseWriter, r *http.Request) {
 	pidStr := r.PathValue("id")
 	pid, err := strconv.Atoi(pidStr)
@@ -678,14 +680,27 @@ func getImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ext := r.PathValue("ext")
+
+	// 画像ファイルのパス
+	imageFilePath := fmt.Sprintf("%s/%d.%s", IMAGE_FILE_PATH, pid, ext)
+
+	// 画像がファイルシステムに存在するかチェック
+	if _, err := os.Stat(imageFilePath); os.IsNotExist(err) {
+		// DBから取得
+		var post Post
+		err = db.Get(&post, "SELECT imgdata, mime FROM posts WHERE id = ?", pid)
+
+		// 画像をファイルに保存
+		err = os.WriteFile(imageFilePath, post.Imgdata, 0644)
+	}
+
 	post := Post{}
 	err = db.Get(&post, "SELECT * FROM `posts` WHERE `id` = ?", pid)
 	if err != nil {
 		log.Print(err)
 		return
 	}
-
-	ext := r.PathValue("ext")
 
 	if ext == "jpg" && post.Mime == "image/jpeg" ||
 		ext == "png" && post.Mime == "image/png" ||
