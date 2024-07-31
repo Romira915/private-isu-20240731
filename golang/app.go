@@ -148,8 +148,6 @@ func digest(src string) string {
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-	return strings.TrimSuffix(string(out), "\n")
-}
 
 func calculateSalt(accountName string) string {
 	return digest(accountName)
