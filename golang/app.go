@@ -755,14 +755,27 @@ func getPosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := []Post{}
-	err = db.Select(&results, "SELECT `id`, `user_id`, `body`, `mime`, `created_at` FROM `posts` WHERE `created_at` <= ? ORDER BY `created_at` DESC", t.Format(ISO8601Format))
+	results := []PostRaw{}
+	err = db.Select(&results, `
+			SELECT p.id         AS post_id,
+                   p.user_id    AS user_id,
+                   p.mime,
+                   p.body,
+                   p.created_at AS post_created_at,
+                   u.account_name,
+                   u.created_at AS user_created_at
+            FROM posts as p FORCE INDEX (posts_created_at_idx)
+                     JOIN users as u ON p.user_id = u.id
+            WHERE p.created_at <= ?
+              AND u.del_flg = 0
+            ORDER BY p.created_at DESC
+            LIMIT ?`, t.Format(ISO8601Format), postsPerPage)
 	if err != nil {
 		log.Print(err)
 		return
 	}
 
-	posts, err := makePosts(results, getCSRFToken(r), false)
+	posts, err := makePosts2(results, getCSRFToken(r), false)
 	if err != nil {
 		log.Print(err)
 		return
@@ -777,10 +790,30 @@ func getPosts(w http.ResponseWriter, r *http.Request) {
 		"imageURL": imageURL,
 	}
 
+	transratedPosts := []Post{}
+	for _, post := range posts {
+		var comments []Comment
+		for _, comment := range post.Comments {
+			comments = append(comments, comment.Comment)
+		}
+		newPost := Post{
+			ID:           post.Post.ID,
+			UserID:       post.Post.UserID,
+			Body:         post.Post.Body,
+			Mime:         post.Post.Mime,
+			CreatedAt:    post.Post.CreatedAt,
+			CommentCount: post.Comment_count,
+			Comments:     comments,
+			User:         post.User,
+			CSRFToken:    post.Csrf_token,
+		}
+		transratedPosts = append(transratedPosts, newPost)
+	}
+
 	template.Must(template.New("posts.html").Funcs(fmap).ParseFiles(
 		getTemplPath("posts.html"),
 		getTemplPath("post.html"),
-	)).Execute(w, posts)
+	)).Execute(w, transratedPosts)
 }
 
 func getPostsID(w http.ResponseWriter, r *http.Request) {
