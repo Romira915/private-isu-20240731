@@ -61,6 +61,16 @@ type Post struct {
 	CSRFToken    string
 }
 
+type PostRaw struct {
+	PostID          int       `db:"post_id"`
+	UserID          int       `db:"user_id"`
+	Body            string    `db:"body"`
+	Mime            string    `db:"mime"`
+	PostCreatedAt   time.Time `db:"post_created_at"`
+	Account_name    string    `db:"account_name"`
+	User_created_at time.Time `db:"user_created_at"`
+}
+
 type Comment struct {
 	ID        int       `db:"id"`
 	PostID    int       `db:"post_id"`
@@ -68,6 +78,19 @@ type Comment struct {
 	Comment   string    `db:"comment"`
 	CreatedAt time.Time `db:"created_at"`
 	User      User
+}
+
+type GrantedInfoPost struct {
+	Post          Post
+	Comment_count int
+	Comments      []GrantedUserComment
+	User          User
+	Csrf_token    string
+}
+
+type GrantedUserComment struct {
+	Comment Comment
+	User    User
 }
 
 func init() {
@@ -260,6 +283,7 @@ func makePosts(results []Post,csrfToken string, allComments bool)([]Post,error){
 }
 
 
+
 func imageURL(p Post) string {
 	ext := ""
 	if p.Mime == "image/jpeg" {
@@ -422,15 +446,21 @@ func getLogout(w http.ResponseWriter, r *http.Request) {
 func getIndex(w http.ResponseWriter, r *http.Request) {
 	me := getSessionUser(r)
 
-	results := []Post{}
+	results := []PostRaw{}
 
-	err := db.Select(&results, "SELECT `id`, `user_id`, `body`, `mime`, `created_at` FROM `posts` ORDER BY `created_at` DESC")
+	err := db.Select(&results,
+		`SELECT p.id AS post_id, p.user_id AS user_id, p.body, p.mime, p.created_at AS post_created_at, u.account_name AS account_name, u.created_at AS user_created_at
+		FROM posts as p FORCE INDEX (posts_created_at_idx) 
+			JOIN users as u ON p.user_id = u.id
+		WHERE u.del_flg = 0
+		ORDER BY p.created_at DESC LIMIT ?`,
+		postsPerPage)
 	if err != nil {
 		log.Print(err)
 		return
 	}
 
-	posts, err := makePosts(results, getCSRFToken(r), false)
+	posts, err := makePosts2(results, getCSRFToken(r), false)
 	if err != nil {
 		log.Print(err)
 		return
@@ -438,6 +468,26 @@ func getIndex(w http.ResponseWriter, r *http.Request) {
 
 	fmap := template.FuncMap{
 		"imageURL": imageURL,
+	}
+
+	transratedPosts := []Post{}
+	for _, post := range posts {
+		var comments []Comment
+		for _, comment := range post.Comments {
+			comments = append(comments, comment.Comment)
+		}
+		newPost := Post{
+			ID:           post.Post.ID,
+			UserID:       post.Post.UserID,
+			Body:         post.Post.Body,
+			Mime:         post.Post.Mime,
+			CreatedAt:    post.Post.CreatedAt,
+			CommentCount: post.Comment_count,
+			Comments:     comments,
+			User:         post.User,
+			CSRFToken:    post.Csrf_token,
+		}
+		transratedPosts = append(transratedPosts, newPost)
 	}
 
 	template.Must(template.New("layout.html").Funcs(fmap).ParseFiles(
@@ -450,7 +500,7 @@ func getIndex(w http.ResponseWriter, r *http.Request) {
 		Me        User
 		CSRFToken string
 		Flash     string
-	}{posts, me, getCSRFToken(r), getFlash(w, r, "notice")})
+	}{transratedPosts, me, getCSRFToken(r), getFlash(w, r, "notice")})
 }
 
 func getAccountName(w http.ResponseWriter, r *http.Request) {
