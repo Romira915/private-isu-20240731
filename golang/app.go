@@ -63,8 +63,8 @@ type PostRaw struct {
 	Body            string    `db:"body"`
 	Mime            string    `db:"mime"`
 	PostCreatedAt   time.Time `db:"post_created_at"`
-	account_name    string    `db:"account_name"`
-	user_created_at time.Time `db:"user_created_at"`
+	Account_name    string    `db:"account_name"`
+	User_created_at time.Time `db:"user_created_at"`
 }
 
 type Comment struct {
@@ -283,7 +283,7 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 
 		query = db.Rebind(query)
 
-		err = db.Select(&comments_raw, query, args...)
+		db.Select(&comments_raw, query, args...)
 	} else {
 		query, args, err := sqlx.In(`SELECT ranked_comments.id,
                            ranked_comments.post_id,
@@ -308,7 +308,7 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 
 		query = db.Rebind(query)
 
-		err = db.Select(&comments_raw, query, args...)
+		db.Select(&comments_raw, query, args...)
 	}
 
 	var comment_count_raw []struct {
@@ -328,7 +328,7 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 
 	query = db.Rebind(query)
 
-	err = db.Select(&comment_count_raw, query, args...)
+	db.Select(&comment_count_raw, query, args...)
 
 	var posts []GrantedInfoPost
 	for _, post_raw := range post_raws {
@@ -379,7 +379,7 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 			posts = append(posts, GrantedInfoPost{
 				post:          post,
 				comment_count: len(comment_count_raw),
-				comments:      []GrantedUserComment{},
+				comments:      grantedUserComments,
 				user:          user,
 				csrf_token:    csrfToken,
 			})
