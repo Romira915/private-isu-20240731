@@ -969,7 +969,18 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 画像ファイルを保存
-	imageFilePath := fmt.Sprintf("%s/%d.%s", IMAGE_FILE_PATH, pid, strings.Split(mime, "/")[1])
+	var ext string
+	switch mime {
+	case "image/jpeg":
+		ext = "jpg"
+	case "image/png":
+		ext = "png"
+	case "image/gif":
+		ext = "gif"
+	default:
+		ext = ""
+	}
+	imageFilePath := fmt.Sprintf("%s/%d.%s", IMAGE_FILE_PATH, pid, ext)
 	err = os.WriteFile(imageFilePath, filedata, 0644)
 	if err != nil {
 		log.Print(err)
