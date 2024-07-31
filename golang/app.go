@@ -15,6 +15,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"crypto/sha512"
+	"encoding/hex"
+	"fmt"
 	
 
 	"github.com/bradfitz/gomemcache/memcache"
@@ -119,14 +122,9 @@ func escapeshellarg(arg string) string {
 }
 
 func digest(src string) string {
-	// opensslのバージョンによっては (stdin)= というのがつくので取る
-	out, err := exec.Command("/bin/bash", "-c", `printf "%s" `+escapeshellarg(src)+` | openssl dgst -sha512 | sed 's/^.*= //'`).Output()
-	if err != nil {
-		log.Print(err)
-		return ""
-	}
-
-	return strings.TrimSuffix(string(out), "\n")
+	hasher :=sha512.New()
+	hasher.Write([]byte(src))
+	retrun hex.EncodeToString(hasher.Sum(nil))
 }
 
 func calculateSalt(accountName string) string {
@@ -173,55 +171,91 @@ func getFlash(w http.ResponseWriter, r *http.Request, key string) string {
 	}
 }
 
-func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, error) {
+func makePosts(results []Post,csrfToken string, allComments bool)([]Post,error){
+	postIDs :=make([]int,len(results))
+	userIDS :=make(map[int]struct{})
+	for i,p :=range results{
+		postIDs[i] = p.IDuserIDS[p.UserID] = struct{}{}
+	}
+	commentsQuery :="SELECT * FROM 'comments' WHERE 'post_id' IN (?) ORDER BY 'create_at' DESC"
+	commentsQuery, args, err := sql.In(commentsQuery, postIDs)
+    if err != nil {
+        return nil, err
+    }
+
+	var comments []comment
+	err = db.Select(&comments, commentsQuery, args...)
+    if err != nil {
+        return nil, err
+    }
+
+	postCommentMap :=make(map[int][]Comment)
+	for _,c :=range comments{
+		postCommentMap[comment.PostID] = append(postCommentMap[comment.PostID], comment)
+	}
+
+	userIDsSlice :=make([]int,0,len(userIDs))
+	for id :=range userIDs{
+		userIDsSlice =append(userIDsSlice,id)
+	}
+
+	userQuery :="SELECT * FROM 'users' WHERE 'id' IN (?)"
+	userQuery, args, err := sql.In(userQuery, userIDsSlice)
+	if err != nil {
+		return nil, err
+	}
+
+	var users []User
+	err = db.Select(&users, userQuery, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	userMap :=make(map[int]User)
+	for_, user :=range users{
+		userMap[user.ID] = user
+		}
+
 	var posts []Post
-
-	for _, p := range results {
-		err := db.Get(&p.CommentCount, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?", p.ID)
+	for _,p :=range results{
+		err := db.Get(&p.CommentCount, "SELECT COUNT(*) AS count FROM 'comments' WHERE 'post_id' = ?", p.ID)
 		if err != nil {
 			return nil, err
 		}
 
-		query := "SELECT * FROM `comments` WHERE `post_id` = ? ORDER BY `created_at` DESC"
-		if !allComments {
-			query += " LIMIT 3"
-		}
-		var comments []Comment
-		err = db.Select(&comments, query, p.ID)
-		if err != nil {
-			return nil, err
+		comments := postCommentMap[p.ID]
+		if !allComments && len(comments) > 3{
+			comments = comments[:3]
 		}
 
-		for i := 0; i < len(comments); i++ {
-			err := db.Get(&comments[i].User, "SELECT * FROM `users` WHERE `id` = ?", comments[i].UserID)
-			if err != nil {
-				return nil, err
+		for i :=range comments{
+			if user, exists := userMap[comment.UserID]; exists{
+				comments[i].User = user
 			}
 		}
 
-		// reverse
-		for i, j := 0, len(comments)-1; i < j; i, j = i+1, j-1 {
-			comments[i], comments[j] = comments[j], comments[i]
+		for i,j :=0,len(comments)-1;i<j;i,j =i+1,j-1{
+			comments[i],comments[j] = comments[j],comments[i]
 		}
 
 		p.Comments = comments
 
-		err = db.Get(&p.User, "SELECT * FROM `users` WHERE `id` = ?", p.UserID)
-		if err != nil {
-			return nil, err
+		if user, exists := userMap[p.UserID]; exists{
+			p.User = user
 		}
 
 		p.CSRFToken = csrfToken
 
-		if p.User.DelFlg == 0 {
-			posts = append(posts, p)
+		if p.User.DelFlg == 0{
+			posts = append(posts,p)
 		}
-		if len(posts) >= postsPerPage {
+		if len(posts) >= postsPerPage{
 			break
 		}
 	}
+	return posts,nil
+	
 
-	return posts, nil
 }
 
 func imageURL(p Post) string {
