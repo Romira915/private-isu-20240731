@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	crand "crypto/rand"
 	"fmt"
 	"html/template"
@@ -989,7 +990,7 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	defer out.Close()
 
-	_, err = out.Write(filedata)
+	_, err = io.Copy(out, bytes.NewReader(filedata))
 	if err != nil {
 		log.Print(err)
 		return
@@ -1001,6 +1002,7 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 const IMAGE_FILE_PATH = "/home/isucon/private_isu/webapp/public/image"
 
 func getImage(w http.ResponseWriter, r *http.Request) {
+	log.Print("getImage")
 	pidStr := r.PathValue("id")
 	pid, err := strconv.Atoi(pidStr)
 	if err != nil {
