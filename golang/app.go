@@ -575,6 +575,8 @@ func getIndex(w http.ResponseWriter, r *http.Request) {
 		"imageURL": imageURL,
 	}
 
+	log.Print(posts)
+
 	transratedPosts := []Post{}
 	for _, post := range posts {
 		var comments []Comment
