@@ -1,11 +1,11 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT * FROM `posts` WHERE `id` = ?",
+  "query": "SELECT p.id AS post_id, p.user_id AS user_id, p.mime, p.body, p.created_at AS post_created_at, u.account_name, u.created_at AS user_created_at\n                FROM posts as p FORCE INDEX (posts_created_at_idx)\n                    JOIN users as u ON p.user_id = u.id\n                WHERE u.del_flg = 0\n                ORDER BY p.created_at DESC\n                LIMIT ?",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id",
+        "name": "post_id",
         "type_info": {
           "type": "Long",
           "flags": "NOT_NULL | PRIMARY_KEY | AUTO_INCREMENT",
@@ -18,7 +18,7 @@
         "name": "user_id",
         "type_info": {
           "type": "Long",
-          "flags": "NOT_NULL | NO_DEFAULT_VALUE",
+          "flags": "NOT_NULL | MULTIPLE_KEY | NO_DEFAULT_VALUE",
           "char_set": 63,
           "max_size": 11
         }
@@ -35,16 +35,6 @@
       },
       {
         "ordinal": 3,
-        "name": "imgdata",
-        "type_info": {
-          "type": "Blob",
-          "flags": "NOT_NULL | BLOB | BINARY | NO_DEFAULT_VALUE",
-          "char_set": 63,
-          "max_size": 16777215
-        }
-      },
-      {
-        "ordinal": 4,
         "name": "body",
         "type_info": {
           "type": "Blob",
@@ -54,8 +44,28 @@
         }
       },
       {
+        "ordinal": 4,
+        "name": "post_created_at",
+        "type_info": {
+          "type": "Timestamp",
+          "flags": "NOT_NULL | MULTIPLE_KEY | BINARY | TIMESTAMP",
+          "char_set": 63,
+          "max_size": 19
+        }
+      },
+      {
         "ordinal": 5,
-        "name": "created_at",
+        "name": "account_name",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | UNIQUE_KEY | NO_DEFAULT_VALUE",
+          "char_set": 224,
+          "max_size": 256
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "user_created_at",
         "type_info": {
           "type": "Timestamp",
           "flags": "NOT_NULL | BINARY | TIMESTAMP",
@@ -73,8 +83,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "27968c29f9d77ab1d973f4fb966b8a0101329cd55315f9f60e780b6f5bc79d8c"
+  "hash": "a56e25cc6f2e8fb5267f7f18a015e80cc030475e05403b5fdf557ab8fd1a4198"
 }

@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::fmt::Write;
+use std::path::Path;
 use std::{env, io, time::Duration};
 
 use actix_cors::Cors;
@@ -8,7 +10,6 @@ use actix_multipart::{Field, Multipart};
 use actix_session::config::PersistentSession;
 use actix_session::storage::{LoadError, SaveError, SessionKey, SessionStore, UpdateError};
 use actix_session::{Session, SessionMiddleware};
-use actix_web::http::header::HeaderMap;
 use actix_web::{
     get,
     http::header,
@@ -31,12 +32,16 @@ use rand::{
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
+use sha2::{Digest, Sha512};
 use sqlx::{MySql, Pool};
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 
 const POSTS_PER_PAGE: usize = 20;
 const UPLOAD_LIMIT: usize = 10 * 1024 * 1024;
 const SESSION_KEY_LENGTH: u32 = 32;
 const SESSION_TTL: i64 = 60 * 60 * 24 * 30;
+const IMAGE_FILE_PATH: &'static str = "../public/image";
 static AGGREGATION_LOWER_CASE_NUM: Lazy<Vec<char>> = Lazy::new(|| {
     let mut az09 = Vec::new();
     for az in 'a' as u32..('z' as u32 + 1) {
@@ -76,7 +81,6 @@ impl Default for User {
 struct Post {
     id: i32,
     user_id: i32,
-    imgdata: Vec<u8>,
     body: String,
     mime: String,
     created_at: chrono::DateTime<Utc>,
@@ -304,12 +308,17 @@ fn _escapeshellarg(arg: &str) -> String {
 }
 
 fn digest(src: &str) -> anyhow::Result<String> {
-    let output = duct_sh::sh(r#"printf "%s" "$SRC" | openssl dgst -sha512 | sed 's/^.*= //'"#)
-        .env("SRC", src)
-        .read()
-        .context("Failed to cmd")?;
+    let mut hasher = Sha512::new();
+    hasher.update(src.as_bytes());
+    let output = hasher
+        .finalize()
+        .iter()
+        .fold(String::new(), |mut output, b| {
+            let _ = write!(output, "{b:02x}");
+            output
+        });
 
-    Ok(output.trim_end_matches('\n').to_string())
+    Ok(output)
 }
 
 fn validate_user(account_name: &str, password: &str) -> bool {
@@ -342,10 +351,23 @@ async fn get_session_user(session: &Session, pool: &Pool<MySql>) -> anyhow::Resu
         _ => return Ok(None),
     };
 
+    if let Some(user) = session
+        .get::<User>("user")
+        .context("Failed to get_session_user")?
+    {
+        return Ok(Some(user));
+    }
+
     let user = sqlx::query_as!(User, "SELECT * FROM `users` WHERE `id` = ?", &uid)
         .fetch_optional(pool)
         .await
         .context("Failed to get_session_user")?;
+
+    if let Some(user) = &user {
+        session
+            .insert("user", user)
+            .context("Failed to get_session_user")?;
+    }
 
     Ok(user)
 }
@@ -360,82 +382,153 @@ fn get_flash(session: &Session, key: &str) -> Option<String> {
     }
 }
 
+struct PostRaw {
+    post_id: i32,
+    user_id: i32,
+    mime: String,
+    body: String,
+    post_created_at: chrono::DateTime<Utc>,
+    account_name: String,
+    user_created_at: chrono::DateTime<Utc>,
+}
+
 async fn make_post(
-    results: Vec<Post>,
+    post_raws: Vec<PostRaw>,
     csrf_token: String,
     all_comments: bool,
     pool: &Pool<MySql>,
 ) -> anyhow::Result<Vec<GrantedInfoPost>> {
-    let mut granted_info_posts = Vec::new();
+    let comments_raw = {
+        struct CommentRaw {
+            id: i32,
+            post_id: i32,
+            user_id: i32,
+            comment: String,
+            comment_created_at: chrono::DateTime<Utc>,
+            account_name: String,
+            user_created_at: chrono::DateTime<Utc>,
+        }
+        let post_ids = post_raws.iter().map(|p| p.post_id).collect::<Vec<i32>>();
 
-    for p in results {
-        let comment_count = sqlx::query!(
-            "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?",
-            p.id
-        )
-        .fetch_one(pool)
-        .await
-        .context("Failed to query comment_count")?
-        .count;
-
-        let comments = if all_comments {
+        if all_comments {
             sqlx::query_as!(
-                Comment,
-                "SELECT * FROM `comments` WHERE `post_id` = ? ORDER BY `created_at` DESC",
-                p.id
-            )
-            .fetch_all(pool)
-            .await
+                CommentRaw,
+                r#"SELECT ranked_comments.id,
+                           ranked_comments.post_id,
+                           ranked_comments.user_id,
+                           ranked_comments.comment,
+                           ranked_comments.created_at AS comment_created_at,
+                           u.account_name,
+                           u.created_at AS user_created_at
+                    FROM (SELECT *,
+                                 ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY created_at DESC) AS row_num
+                          FROM comments
+                          WHERE post_id IN (?)) AS ranked_comments
+                             JOIN users AS u ON ranked_comments.user_id = u.id
+                    WHERE u.del_flg = 0
+                    ORDER BY post_id, comment_created_at DESC"#,
+                post_ids.iter().map(|i| i.to_string()).collect::<Vec<String>>().join(", ")
+            ).fetch_all(pool).await?
         } else {
             sqlx::query_as!(
-                Comment,
-                "SELECT * FROM `comments` WHERE `post_id` = ? ORDER BY `created_at` DESC LIMIT 3",
-                p.id
-            )
-            .fetch_all(pool)
-            .await
+                CommentRaw,
+                r#"SELECT ranked_comments.id,
+                           ranked_comments.post_id,
+                           ranked_comments.user_id,
+                           ranked_comments.comment,
+                           ranked_comments.created_at AS comment_created_at,
+                           u.account_name,
+                           u.created_at AS user_created_at
+                    FROM (SELECT *,
+                                 ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY created_at DESC) AS row_num
+                          FROM comments
+                          WHERE post_id IN (?)) AS ranked_comments
+                             JOIN users AS u ON ranked_comments.user_id = u.id
+                    WHERE row_num <= 3
+                      AND u.del_flg = 0
+                    ORDER BY post_id, comment_created_at DESC"#,
+                post_ids.iter().map(|i| i.to_string()).collect::<Vec<String>>().join(", ")
+            ).fetch_all(pool).await?
         }
-        .context("Failed to query comments")?;
+    };
 
-        let mut granted_comments = Vec::new();
+    let comment_count_raw = {
+        let post_ids = post_raws.iter().map(|p| p.post_id).collect::<Vec<i32>>();
 
-        for comment in comments {
-            let user = sqlx::query_as!(
-                User,
-                "SELECT * FROM `users` WHERE `id` = ?",
-                comment.user_id
-            )
-            .fetch_optional(pool)
-            .await
-            .context("Failed to query user")?
-            .context("Not found user")?;
+        sqlx::query!(
+            r#"SELECT post_id, COUNT(*) AS comment_count
+            FROM comments
+            WHERE post_id IN (?)
+            GROUP BY post_id"#,
+            post_ids
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<String>>()
+                .join(", ")
+        )
+        .fetch_all(pool)
+        .await?
+    };
 
-            granted_comments.push(GrantedUserComment::new(comment, user));
-        }
+    let posts = {
+        let mut granted_info_posts = Vec::new();
+        for post_raw in post_raws {
+            let post = Post::new(
+                post_raw.post_id,
+                post_raw.user_id,
+                post_raw.body,
+                post_raw.mime,
+                post_raw.post_created_at,
+            );
+            let user = User::new(
+                post_raw.user_id,
+                post_raw.account_name,
+                "".to_string(),
+                0,
+                0,
+                post_raw.user_created_at,
+            );
 
-        granted_comments.reverse();
+            let comments = comments_raw
+                .iter()
+                .filter(|c| c.post_id == post_raw.post_id)
+                .map(|c| {
+                    let comment = Comment::new(
+                        c.id,
+                        c.post_id,
+                        c.user_id,
+                        c.comment.clone(),
+                        c.comment_created_at,
+                    );
+                    let user = User::new(
+                        c.user_id,
+                        c.account_name.clone(),
+                        "".to_string(),
+                        0,
+                        0,
+                        c.user_created_at,
+                    );
 
-        let user = sqlx::query_as!(User, "SELECT * FROM `users` WHERE `id` = ?", p.user_id)
-            .fetch_optional(pool)
-            .await
-            .context("Failed to query user")?
-            .context("Not found user")?;
+                    GrantedUserComment::new(comment, user)
+                })
+                .collect::<Vec<GrantedUserComment>>();
 
-        if user.del_flg == 0 {
             granted_info_posts.push(GrantedInfoPost::new(
-                p,
-                comment_count,
-                granted_comments,
+                post,
+                comment_count_raw
+                    .iter()
+                    .find(|c| c.post_id == post_raw.post_id)
+                    .map(|c| c.comment_count)
+                    .unwrap_or_default(),
+                comments,
                 user,
                 csrf_token.clone(),
-            ))
+            ));
         }
-        if granted_info_posts.len() >= POSTS_PER_PAGE {
-            break;
-        }
-    }
+        granted_info_posts
+    };
 
-    Ok(granted_info_posts)
+    Ok(posts)
 }
 
 handlebars_helper!(image_url: |p: GrantedInfoPost| {
@@ -450,7 +543,7 @@ handlebars_helper!(image_url: |p: GrantedInfoPost| {
 });
 
 handlebars_helper!(date_time_format: |create_at: DateTime<Utc>| {
-    create_at.format("%Y-%m-%dT%H:%M:%S+00:00").to_string()
+    create_at.format("%Y-%m-%dT%H:%M:%S-07:00").to_string()
 });
 
 fn is_login(u: Option<&User>) -> bool {
@@ -690,17 +783,26 @@ async fn get_index(
         }
     };
 
-    let results = match sqlx::query_as!(Post, "SELECT `id`, `user_id`, `body`, `mime`, `created_at`, b'0' AS imgdata FROM `posts` ORDER BY `created_at` DESC").fetch_all(pool.as_ref()).await {
-        Ok(results) => results,
+    let csrf_token = get_csrf_token(&session).unwrap_or_default();
+
+    let post_raws = match sqlx::query_as!(
+            PostRaw,
+            r#"SELECT p.id AS post_id, p.user_id AS user_id, p.mime, p.body, p.created_at AS post_created_at, u.account_name, u.created_at AS user_created_at
+                FROM posts as p FORCE INDEX (posts_created_at_idx)
+                    JOIN users as u ON p.user_id = u.id
+                WHERE u.del_flg = 0
+                ORDER BY p.created_at DESC
+                LIMIT ?"#,
+            POSTS_PER_PAGE as u32
+        ).fetch_all(pool.as_ref()).await {
+        Ok(r) => r,
         Err(e) => {
             return Ok(HttpResponse::InternalServerError().body(e.to_string()));
         }
     };
 
-    let csrf_token = get_csrf_token(&session).unwrap_or_default();
-
-    let posts = match make_post(results, csrf_token, false, pool.as_ref()).await {
-        Ok(posts) => posts,
+    let posts = match make_post(post_raws, csrf_token, false, pool.as_ref()).await {
+        Ok(p) => p,
         Err(e) => {
             return Ok(HttpResponse::InternalServerError().body(e.to_string()));
         }
@@ -747,19 +849,32 @@ async fn get_account_name(
         Ok(Some(user)) => user,
         Ok(None) => return Ok(HttpResponse::NotFound().finish()),
         Err(e) => {
-            return Ok(HttpResponse::Ok().body(e.to_string()));
+            return Ok(HttpResponse::InternalServerError().body(e.to_string()));
         }
     };
 
-    let results = match sqlx::query_as!(Post,"SELECT `id`, `user_id`, `body`, `mime`, `created_at`, b'0' AS imgdata FROM `posts` WHERE `user_id` = ? ORDER BY `created_at` DESC",user.id).fetch_all(pool.as_ref()).await{
+    let post_raws = match sqlx::query_as!(
+            PostRaw,
+            r#"SELECT p.id AS post_id, p.user_id AS user_id, p.mime, p.body, p.created_at AS post_created_at, u.account_name, u.created_at AS user_created_at
+                FROM posts as p FORCE INDEX (posts_user_id_created_at_idx)
+                    JOIN users as u ON p.user_id = u.id
+                WHERE p.user_id = ?
+                    AND u.del_flg = 0
+                ORDER BY p.created_at DESC
+                LIMIT ?"#,
+            user.id,
+            POSTS_PER_PAGE as u32
+        )
+        .fetch_all(pool.as_ref())
+        .await {
         Ok(r) => r,
-        Err(e)=>{
-            return Ok(HttpResponse::Ok().body(e.to_string()));
+        Err(e) => {
+            return Ok(HttpResponse::InternalServerError().body(e.to_string()));
         }
     };
 
     let posts = match make_post(
-        results,
+        post_raws,
         get_csrf_token(&session).unwrap_or_default(),
         false,
         pool.as_ref(),
@@ -768,7 +883,7 @@ async fn get_account_name(
     {
         Ok(p) => p,
         Err(e) => {
-            return Ok(HttpResponse::Ok().body(e.to_string()));
+            return Ok(HttpResponse::InternalServerError().body(e.to_string()));
         }
     };
 
@@ -878,15 +993,34 @@ async fn get_posts(
         }
     };
 
-    let results = match sqlx::query_as!(Post,"SELECT `id`, `user_id`, `body`, `mime`, `created_at`, b'0' AS imgdata FROM `posts` WHERE `created_at` <= ? ORDER BY `created_at` DESC",&t.to_rfc3339()).fetch_all(pool.as_ref()).await{
-        Ok(r)=> r,
-        Err(e)=> {
+    let post_raws = match sqlx::query_as!(
+        PostRaw,
+        r#"SELECT p.id         AS post_id,
+                   p.user_id    AS user_id,
+                   p.mime,
+                   p.body,
+                   p.created_at AS post_created_at,
+                   u.account_name,
+                   u.created_at AS user_created_at
+            FROM posts as p FORCE INDEX (posts_created_at_idx)
+                     JOIN users as u ON p.user_id = u.id
+            WHERE p.created_at <= ?
+              AND u.del_flg = 0
+            ORDER BY p.created_at DESC
+            LIMIT 20"#,
+        &t.to_rfc3339()
+    )
+    .fetch_all(pool.as_ref())
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
             return Ok(HttpResponse::Ok().body(e.to_string()));
         }
     };
 
     let posts = match make_post(
-        results,
+        post_raws,
         get_csrf_token(&session).unwrap_or_default(),
         false,
         pool.as_ref(),
@@ -912,10 +1046,7 @@ async fn get_posts(
         handlebars.render("post", &map).unwrap()
     };
 
-    Ok(HttpResponse::Ok()
-        .insert_header((header::CONTENT_TYPE, "text/html; charset=utf-8"))
-        .insert_header((header::TRANSFER_ENCODING, "chunked"))
-        .body(body))
+    Ok(HttpResponse::Ok().body(body))
 }
 
 #[get("/posts/{id}")]
@@ -925,9 +1056,25 @@ async fn get_posts_id(
     pool: Data<Pool<MySql>>,
     handlebars: Data<Handlebars<'_>>,
 ) -> Result<HttpResponse> {
-    let results = match sqlx::query_as!(Post, "SELECT * FROM `posts` WHERE `id` = ?", pid.0)
-        .fetch_all(pool.as_ref())
-        .await
+    let post_raws = match sqlx::query_as!(
+        PostRaw,
+        r#"SELECT p.id         AS post_id,
+                   p.user_id    AS user_id,
+                   p.mime,
+                   p.body,
+                   p.created_at AS post_created_at,
+                   u.account_name,
+                   u.created_at AS user_created_at
+            FROM posts as p FORCE INDEX (PRIMARY)
+                     JOIN users as u ON p.user_id = u.id
+            WHERE p.id = ?
+              AND u.del_flg = 0
+            ORDER BY p.created_at DESC
+            LIMIT 20"#,
+        pid.0
+    )
+    .fetch_all(pool.as_ref())
+    .await
     {
         Ok(r) => r,
         Err(e) => {
@@ -935,8 +1082,12 @@ async fn get_posts_id(
         }
     };
 
+    if post_raws.is_empty() {
+        return Ok(HttpResponse::NotFound().finish());
+    }
+
     let posts = match make_post(
-        results,
+        post_raws,
         get_csrf_token(&session).unwrap_or_default(),
         true,
         pool.as_ref(),
@@ -948,10 +1099,6 @@ async fn get_posts_id(
             return Ok(HttpResponse::Ok().body(e.to_string()));
         }
     };
-
-    if posts.is_empty() {
-        return Ok(HttpResponse::NotFound().finish());
-    }
 
     let p = &posts[0];
 
@@ -1023,7 +1170,7 @@ async fn post_index(
                                 .insert_header((header::LOCATION, "/"))
                                 .finish()),
                             Err(e) => Ok(HttpResponse::InternalServerError().body(e.to_string())),
-                        }
+                        };
                     }
                     _ => {
                         return match session.insert("notice", "画像が必須です") {
@@ -1031,7 +1178,7 @@ async fn post_index(
                                 .insert_header((header::LOCATION, "/"))
                                 .finish()),
                             Err(e) => Ok(HttpResponse::InternalServerError().body(e.to_string())),
-                        }
+                        };
                     }
                 }
             }
@@ -1063,10 +1210,9 @@ async fn post_index(
     }
 
     let pid = match sqlx::query!(
-        "INSERT INTO `posts` (`user_id`, `mime`, `imgdata`, `body`) VALUES (?,?,?,?)",
+        "INSERT INTO `posts` (`user_id`, `mime`, `imgdata`, `body`) VALUES (?, ?, b'0', ?)",
         me.id,
         &mime_,
-        &file,
         &body
     )
     .execute(pool.as_ref())
@@ -1074,9 +1220,27 @@ async fn post_index(
     {
         Ok(result) => result.last_insert_id(),
         Err(e) => {
-            return Ok(HttpResponse::Ok().body(e.to_string()));
+            return Ok(HttpResponse::InternalServerError().body(e.to_string()));
         }
     };
+
+    {
+        let ext = match mime_.as_str() {
+            "image/jpeg" => "jpg",
+            "image/png" => "png",
+            "image/gif" => "gif",
+            _ => "",
+        };
+        let mut image_file = File::options()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .append(false)
+            .open(format!("{}/{}.{}", IMAGE_FILE_PATH, pid, ext))
+            .await?;
+        image_file.write_all(&file).await?;
+        image_file.flush().await?;
+    }
 
     Ok(HttpResponse::Found()
         .insert_header((header::LOCATION, format!("/posts/{}", pid)))
@@ -1090,7 +1254,33 @@ async fn get_image(
 ) -> Result<HttpResponse> {
     let (pid, ext) = path.into_inner();
 
-    let post = match sqlx::query_as!(Post, "SELECT * FROM `posts` WHERE `id` = ?", pid)
+    // DBからファイルシステムへの移行処理
+    let image_file_path = format!("{}/{}.{}", IMAGE_FILE_PATH, pid, ext);
+    if !Path::new(&image_file_path).exists() {
+        let image_data = match sqlx::query!(r#"SELECT imgdata FROM `posts` WHERE `id` = ?"#, pid)
+            .fetch_one(pool.as_ref())
+            .await
+        {
+            Ok(f) => f.imgdata,
+            Err(e) => {
+                return Ok(HttpResponse::Ok().body(e.to_string()));
+            }
+        };
+
+        {
+            let mut image_file = File::options()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .append(false)
+                .open(&image_file_path)
+                .await?;
+            image_file.write_all(&image_data).await?;
+            image_file.flush().await?;
+        }
+    }
+
+    let post = match sqlx::query!(r#"SELECT mime, imgdata FROM `posts` WHERE `id` = ?"#, pid)
         .fetch_optional(pool.as_ref())
         .await
     {
@@ -1144,7 +1334,7 @@ async fn post_comment(
     }
 
     if let Err(e) = sqlx::query!(
-        "INSERT INTO `comments` (`post_id`, `user_id`, `comment`) VALUES (?,?,?)",
+        "INSERT INTO `comments` (`post_id`, `user_id`, `comment`) VALUES (?, ?, ?)",
         params.post_id,
         me.id,
         &params.comment
@@ -1364,6 +1554,7 @@ async fn main() -> io::Result<()> {
             .service(get_account_name)
             .service(Files::new("/", "../public"))
     })
+    .workers(4)
     .bind(("0.0.0.0", 8080))?
     .run()
     .await
