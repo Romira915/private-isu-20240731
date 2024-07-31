@@ -15,6 +15,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"crypto/sha512"
+	"encoding/hex"
+	"fmt"
+	
 
 	"github.com/bradfitz/gomemcache/memcache"
 	gsm "github.com/bradleypeabody/gorilla-sessions-memcache"
@@ -132,6 +136,7 @@ func validateUser(accountName, password string) bool {
 		regexp.MustCompile(`\A[0-9a-zA-Z_]{6,}\z`).MatchString(password)
 }
 
+
 // 今回のGo実装では言語側のエスケープの仕組みが使えないのでOSコマンドインジェクション対策できない
 // 取り急ぎPHPのescapeshellarg関数を参考に自前で実装
 // cf: http://jp2.php.net/manual/ja/function.escapeshellarg.php
@@ -140,14 +145,9 @@ func escapeshellarg(arg string) string {
 }
 
 func digest(src string) string {
-	// opensslのバージョンによっては (stdin)= というのがつくので取る
-	out, err := exec.Command("/bin/bash", "-c", `printf "%s" `+escapeshellarg(src)+` | openssl dgst -sha512 | sed 's/^.*= //'`).Output()
-	if err != nil {
-		log.Print(err)
-		return ""
-	}
-
-	return strings.TrimSuffix(string(out), "\n")
+	hasher :=sha512.New()
+	hasher.Write([]byte(src))
+	return hex.EncodeToString(hasher.Sum(nil))
 }
 
 func calculateSalt(accountName string) string {
@@ -245,163 +245,7 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 	return posts, nil
 }
 
-type CommentRaw struct {
-	Id               int       `db:"id"`
-	PostID           int       `db:"post_id"`
-	UserID           int       `db:"user_id"`
-	Comment          string    `db:"comment"`
-	CommentCreatedAt time.Time `db:"comment_created_at"`
-	AccountName      string    `db:"account_name"`
-	UserCreatedAt    time.Time `db:"user_created_at"`
-}
 
-func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]GrantedInfoPost, error) {
-	comments_raw := []CommentRaw{}
-	var post_ids []int
-	for _, post_raw := range post_raws {
-		post_ids = append(post_ids, post_raw.PostID)
-	}
-
-	if allComments {
-		query, args, err := sqlx.In(`SELECT ranked_comments.id,
-                           ranked_comments.post_id,
-                           ranked_comments.user_id,
-                           ranked_comments.comment,
-                           ranked_comments.created_at AS comment_created_at,
-                           u.account_name,
-                           u.created_at AS user_created_at
-                    FROM (SELECT *,
-                                 ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY created_at DESC) AS row_num
-                          FROM comments
-                          WHERE post_id IN (?)) AS ranked_comments
-                             JOIN users AS u ON ranked_comments.user_id = u.id
-                    WHERE u.del_flg = 0
-                    ORDER BY post_id, comment_created_at DESC`,
-			post_ids)
-		if err != nil {
-			log.Print(err)
-			return nil, err
-		}
-
-		query = db.Rebind(query)
-
-		err = db.Select(&comments_raw, query, args...)
-		if err != nil {
-			log.Print(err)
-			return nil, err
-		}
-	} else {
-		query, args, err := sqlx.In(`SELECT ranked_comments.id AS id,
-                           ranked_comments.post_id AS post_id,
-                           ranked_comments.user_id AS user_id,
-                           ranked_comments.comment AS comment,
-                           ranked_comments.created_at AS comment_created_at,
-                           u.account_name AS account_name,
-                           u.created_at AS user_created_at
-                    FROM (SELECT *,
-                                 ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY created_at DESC) AS row_num
-                          FROM comments
-                          WHERE post_id IN (?)) AS ranked_comments
-                             JOIN users AS u ON ranked_comments.user_id = u.id
-                    WHERE row_num <= 3
-                      AND u.del_flg = 0
-                    ORDER BY post_id, comment_created_at DESC`,
-			post_ids)
-		if err != nil {
-			log.Print(err)
-			return nil, err
-		}
-
-		query = db.Rebind(query)
-
-		err = db.Select(&comments_raw, query, args...)
-		if err != nil {
-			log.Print(err)
-			return nil, err
-		}
-	}
-
-	var comment_count_raw []struct {
-		Post_id       int `db:"post_id"`
-		Comment_count int `db:"comment_count"`
-	}
-	query, args, err := sqlx.In(`SELECT post_id, COUNT(*) AS comment_count
-            FROM comments
-            WHERE post_id IN (?)
-            GROUP BY post_id`,
-		post_ids)
-
-	if err != nil {
-		log.Print(err)
-		return nil, err
-	}
-
-	query = db.Rebind(query)
-
-	err = db.Select(&comment_count_raw, query, args...)
-	if err != nil {
-		log.Print(err)
-		return nil, err
-	}
-
-	var posts []GrantedInfoPost
-	for _, post_raw := range post_raws {
-		post := Post{
-			ID:           post_raw.PostID,
-			UserID:       post_raw.UserID,
-			Body:         post_raw.Body,
-			Mime:         post_raw.Mime,
-			CreatedAt:    post_raw.PostCreatedAt,
-			CommentCount: 0,
-			Comments:     []Comment{},
-			User:         User{},
-			CSRFToken:    csrfToken,
-		}
-		user := User{
-			ID:          post_raw.UserID,
-			AccountName: post_raw.Account_name,
-			CreatedAt:   post_raw.User_created_at,
-		}
-
-		var grantedUserComments []GrantedUserComment
-		for _, comment_raw := range comments_raw {
-			if post.ID == comment_raw.PostID {
-				comment := Comment{
-					ID:        comment_raw.Id,
-					PostID:    comment_raw.PostID,
-					UserID:    comment_raw.UserID,
-					Comment:   comment_raw.Comment,
-					CreatedAt: comment_raw.CommentCreatedAt,
-					User: User{
-						ID:          comment_raw.UserID,
-						AccountName: comment_raw.AccountName,
-						CreatedAt:   comment_raw.UserCreatedAt,
-					},
-				}
-				user := User{
-					ID:          comment_raw.UserID,
-					AccountName: comment_raw.AccountName,
-					CreatedAt:   comment_raw.UserCreatedAt,
-				}
-
-				grantedUserComments = append(grantedUserComments, GrantedUserComment{
-					Comment: comment,
-					User:    user,
-				})
-			}
-		}
-
-		posts = append(posts, GrantedInfoPost{
-			Post:          post,
-			Comment_count: len(comment_count_raw),
-			Comments:      grantedUserComments,
-			User:          user,
-			Csrf_token:    csrfToken,
-		})
-	}
-
-	return posts, nil
-}
 
 func imageURL(p Post) string {
 	ext := ""
@@ -971,8 +815,6 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/posts/"+strconv.FormatInt(pid, 10), http.StatusFound)
 }
 
-const IMAGE_FILE_PATH = "/home/isucon/private_isu/webapp/public/images"
-
 func getImage(w http.ResponseWriter, r *http.Request) {
 	pidStr := r.PathValue("id")
 	pid, err := strconv.Atoi(pidStr)
@@ -981,27 +823,14 @@ func getImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ext := r.PathValue("ext")
-
-	// 画像ファイルのパス
-	imageFilePath := fmt.Sprintf("%s/%d.%s", IMAGE_FILE_PATH, pid, ext)
-
-	// 画像がファイルシステムに存在するかチェック
-	if _, err := os.Stat(imageFilePath); os.IsNotExist(err) {
-		// DBから取得
-		var post Post
-		err = db.Get(&post, "SELECT imgdata, mime FROM posts WHERE id = ?", pid)
-
-		// 画像をファイルに保存
-		err = os.WriteFile(imageFilePath, post.Imgdata, 0644)
-	}
-
 	post := Post{}
 	err = db.Get(&post, "SELECT * FROM `posts` WHERE `id` = ?", pid)
 	if err != nil {
 		log.Print(err)
 		return
 	}
+
+	ext := r.PathValue("ext")
 
 	if ext == "jpg" && post.Mime == "image/jpeg" ||
 		ext == "png" && post.Mime == "image/png" ||
