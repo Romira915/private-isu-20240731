@@ -63,7 +63,7 @@ type PostRaw struct {
 	Body            string    `db:"body"`
 	Mime            string    `db:"mime"`
 	PostCreatedAt   time.Time `db:"post_created_at"`
-	account_name    string
+	account_name    string    `db:"account_name"`
 	user_created_at time.Time `db:"user_created_at"`
 }
 
