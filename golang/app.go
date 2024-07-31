@@ -288,6 +288,7 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 
 		db.Select(&comments_raw, query, args...)
 	} else {
+		comments_raw := []CommentRaw{}
 		query, args, err := sqlx.In(`SELECT ranked_comments.id AS id,
                            ranked_comments.post_id AS post_id,
                            ranked_comments.user_id AS user_id,
@@ -312,6 +313,8 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 		query = db.Rebind(query)
 
 		db.Select(&comments_raw, query, args...)
+		log.Print(len(comments_raw))
+
 	}
 	log.Print(len(comments_raw))
 
