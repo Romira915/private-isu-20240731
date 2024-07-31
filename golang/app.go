@@ -982,7 +982,14 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	imageFilePath := fmt.Sprintf("%s/%d.%s", IMAGE_FILE_PATH, pid, ext)
 
-	err = os.WriteFile(imageFilePath, filedata, 0644)
+	out, err := os.Create(imageFilePath)
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	defer out.Close()
+
+	_, err = out.Write(filedata)
 	if err != nil {
 		log.Print(err)
 		return
