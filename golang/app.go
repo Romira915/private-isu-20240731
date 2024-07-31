@@ -986,6 +986,7 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 		log.Print(err)
 		return
 	}
+	defer out.Close()
 
 	_, err = io.Copy(out, file)
 	if err != nil {
