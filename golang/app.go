@@ -19,7 +19,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	
-
 	"github.com/bradfitz/gomemcache/memcache"
 	gsm "github.com/bradleypeabody/gorilla-sessions-memcache"
 	"github.com/go-chi/chi/v5"
@@ -136,7 +135,6 @@ func validateUser(accountName, password string) bool {
 		regexp.MustCompile(`\A[0-9a-zA-Z_]{6,}\z`).MatchString(password)
 }
 
-
 // 今回のGo実装では言語側のエスケープの仕組みが使えないのでOSコマンドインジェクション対策できない
 // 取り急ぎPHPのescapeshellarg関数を参考に自前で実装
 // cf: http://jp2.php.net/manual/ja/function.escapeshellarg.php
@@ -148,6 +146,9 @@ func digest(src string) string {
 	hasher :=sha512.New()
 	hasher.Write([]byte(src))
 	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+	return strings.TrimSuffix(string(out), "\n")
 }
 
 func calculateSalt(accountName string) string {
@@ -194,95 +195,214 @@ func getFlash(w http.ResponseWriter, r *http.Request, key string) string {
 	}
 }
 
-func makePosts(results []Post,csrfToken string, allComments bool)([]Post,error){
-	postIDs :=make([]int,len(results))
-	userIDS :=make(map[int]struct{})
-	for i,p :=range results{
-		postIDs[i] = p.ID
-		userIDs[p.UserID] = struct{}{}
-	}
-	commentsQuery :="SELECT * FROM `comments` WHERE `post_id` IN (?) ORDER BY `create_at` DESC"
-	commentsQuery, args, err := sql.In(commentsQuery, postIDs)
-    if err != nil {
-        return nil, err
-    }
-
-	var comments []Comment
-	err = db.Select(&comments, commentsQuery, args...)
-    if err != nil {
-        return nil, err
-    }
-
-	postCommentMap :=make(map[int][]Comment)
-	for _,c :=range comments{
-		postCommentMap[c.PostID] = append(postCommentMap[c.PostID], c)
-	}
-
-	userIDsSlice :=make([]int,0,len(userIDs))
-	for id := range userIDs{
-		userIDsSlice =append(userIDsSlice,id)
-	}
-
-	userQuery :="SELECT * FROM `users` WHERE `id` IN (?)"
-	userQuery, args, err := sqlx.In(userQuery, userIDsSlice)
-	if err != nil {
-		return nil, err
-	}
-
-	var users []User
-	err = db.Select(&users, userQuery, args...)
-	if err != nil {
-		return nil, err
-	}
-
-	userMap :=make(map[int]User)
-	for_, user := range users{
-		userMap[user.ID] = user
-		}
-
+func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, error) {
 	var posts []Post
-	for _,p :=range results{
-		err := db.Get(&p.CommentCount, "SELECT COUNT(*) AS count FROM `comments` WHERE `post_id` = ?", p.ID)
+
+	for _, p := range results {
+		err := db.Get(&p.CommentCount, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?", p.ID)
 		if err != nil {
 			return nil, err
 		}
 
-		comments := postCommentMap[p.ID]
-		if !allComments && len(comments) > 3{
-			comments = comments[:3]
+		query := "SELECT * FROM `comments` WHERE `post_id` = ? ORDER BY `created_at` DESC"
+		if !allComments {
+			query += " LIMIT 3"
+		}
+		var comments []Comment
+		err = db.Select(&comments, query, p.ID)
+		if err != nil {
+			return nil, err
 		}
 
-		for i :=range comments{
-			if user, exists := userMap[comment[i].UserID]; exists{
-				comments[i].User = user
+		for i := 0; i < len(comments); i++ {
+			err := db.Get(&comments[i].User, "SELECT * FROM `users` WHERE `id` = ?", comments[i].UserID)
+			if err != nil {
+				return nil, err
 			}
 		}
 
-		for i,j :=0,len(comments)-1;i<j;i,j =i+1,j-1{
-			comments[i],comments[j] = comments[j],comments[i]
+		// reverse
+		for i, j := 0, len(comments)-1; i < j; i, j = i+1, j-1 {
+			comments[i], comments[j] = comments[j], comments[i]
 		}
 
 		p.Comments = comments
 
-		if user, exists := userMap[p.UserID]; exists{
-			p.User = user
+		err = db.Get(&p.User, "SELECT * FROM `users` WHERE `id` = ?", p.UserID)
+		if err != nil {
+			return nil, err
 		}
 
 		p.CSRFToken = csrfToken
 
-		if p.User.DelFlg == 0{
-			posts = append(posts,p)
+		if p.User.DelFlg == 0 {
+			posts = append(posts, p)
 		}
-		if len(posts) >= postsPerPage{
+		if len(posts) >= postsPerPage {
 			break
 		}
 	}
-	return posts,nil
-	
 
+	return posts, nil
 }
 
+type CommentRaw struct {
+	Id               int       `db:"id"`
+	PostID           int       `db:"post_id"`
+	UserID           int       `db:"user_id"`
+	Comment          string    `db:"comment"`
+	CommentCreatedAt time.Time `db:"comment_created_at"`
+	AccountName      string    `db:"account_name"`
+	UserCreatedAt    time.Time `db:"user_created_at"`
+}
 
+func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]GrantedInfoPost, error) {
+	comments_raw := []CommentRaw{}
+	var post_ids []int
+	for _, post_raw := range post_raws {
+		post_ids = append(post_ids, post_raw.PostID)
+	}
+
+	if allComments {
+		query, args, err := sqlx.In(`SELECT ranked_comments.id,
+                           ranked_comments.post_id,
+                           ranked_comments.user_id,
+                           ranked_comments.comment,
+                           ranked_comments.created_at AS comment_created_at,
+                           u.account_name,
+                           u.created_at AS user_created_at
+                    FROM (SELECT *,
+                                 ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY created_at DESC) AS row_num
+                          FROM comments
+                          WHERE post_id IN (?)) AS ranked_comments
+                             JOIN users AS u ON ranked_comments.user_id = u.id
+                    WHERE u.del_flg = 0
+                    ORDER BY post_id, comment_created_at DESC`,
+			post_ids)
+		if err != nil {
+			log.Print(err)
+			return nil, err
+		}
+
+		query = db.Rebind(query)
+
+		err = db.Select(&comments_raw, query, args...)
+		if err != nil {
+			log.Print(err)
+			return nil, err
+		}
+	} else {
+		query, args, err := sqlx.In(`SELECT ranked_comments.id AS id,
+                           ranked_comments.post_id AS post_id,
+                           ranked_comments.user_id AS user_id,
+                           ranked_comments.comment AS comment,
+                           ranked_comments.created_at AS comment_created_at,
+                           u.account_name AS account_name,
+                           u.created_at AS user_created_at
+                    FROM (SELECT *,
+                                 ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY created_at DESC) AS row_num
+                          FROM comments
+                          WHERE post_id IN (?)) AS ranked_comments
+                             JOIN users AS u ON ranked_comments.user_id = u.id
+                    WHERE row_num <= 3
+                      AND u.del_flg = 0
+                    ORDER BY post_id, comment_created_at DESC`,
+			post_ids)
+		if err != nil {
+			log.Print(err)
+			return nil, err
+		}
+
+		query = db.Rebind(query)
+
+		err = db.Select(&comments_raw, query, args...)
+		if err != nil {
+			log.Print(err)
+			return nil, err
+		}
+	}
+
+	var comment_count_raw []struct {
+		Post_id       int `db:"post_id"`
+		Comment_count int `db:"comment_count"`
+	}
+	query, args, err := sqlx.In(`SELECT post_id, COUNT(*) AS comment_count
+            FROM comments
+            WHERE post_id IN (?)
+            GROUP BY post_id`,
+		post_ids)
+
+	if err != nil {
+		log.Print(err)
+		return nil, err
+	}
+
+	query = db.Rebind(query)
+
+	err = db.Select(&comment_count_raw, query, args...)
+	if err != nil {
+		log.Print(err)
+		return nil, err
+	}
+
+	var posts []GrantedInfoPost
+	for _, post_raw := range post_raws {
+		post := Post{
+			ID:           post_raw.PostID,
+			UserID:       post_raw.UserID,
+			Body:         post_raw.Body,
+			Mime:         post_raw.Mime,
+			CreatedAt:    post_raw.PostCreatedAt,
+			CommentCount: 0,
+			Comments:     []Comment{},
+			User:         User{},
+			CSRFToken:    csrfToken,
+		}
+		user := User{
+			ID:          post_raw.UserID,
+			AccountName: post_raw.Account_name,
+			CreatedAt:   post_raw.User_created_at,
+		}
+
+		var grantedUserComments []GrantedUserComment
+		for _, comment_raw := range comments_raw {
+			if post.ID == comment_raw.PostID {
+				comment := Comment{
+					ID:        comment_raw.Id,
+					PostID:    comment_raw.PostID,
+					UserID:    comment_raw.UserID,
+					Comment:   comment_raw.Comment,
+					CreatedAt: comment_raw.CommentCreatedAt,
+					User: User{
+						ID:          comment_raw.UserID,
+						AccountName: comment_raw.AccountName,
+						CreatedAt:   comment_raw.UserCreatedAt,
+					},
+				}
+				user := User{
+					ID:          comment_raw.UserID,
+					AccountName: comment_raw.AccountName,
+					CreatedAt:   comment_raw.UserCreatedAt,
+				}
+
+				grantedUserComments = append(grantedUserComments, GrantedUserComment{
+					Comment: comment,
+					User:    user,
+				})
+			}
+		}
+
+		posts = append(posts, GrantedInfoPost{
+			Post:          post,
+			Comment_count: len(comment_count_raw),
+			Comments:      grantedUserComments,
+			User:          user,
+			Csrf_token:    csrfToken,
+		})
+	}
+
+	return posts, nil
+}
 
 func imageURL(p Post) string {
 	ext := ""
@@ -518,15 +638,24 @@ func getAccountName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := []Post{}
+	results := []PostRaw{}
 
-	err = db.Select(&results, "SELECT `id`, `user_id`, `body`, `mime`, `created_at` FROM `posts` WHERE `user_id` = ? ORDER BY `created_at` DESC", user.ID)
+	err = db.Select(&results, `SELECT p.id AS post_id, p.user_id AS user_id, p.mime, p.body, p.created_at AS post_created_at, u.account_name, u.created_at AS user_created_at
+                FROM posts as p FORCE INDEX (posts_user_id_created_at_idx)
+                    JOIN users as u ON p.user_id = u.id
+                WHERE p.user_id = ?
+                    AND u.del_flg = 0
+                ORDER BY p.created_at DESC
+                LIMIT ?`,
+		user.ID,
+		postsPerPage)
+
 	if err != nil {
 		log.Print(err)
 		return
 	}
 
-	posts, err := makePosts(results, getCSRFToken(r), false)
+	posts, err := makePosts2(results, getCSRFToken(r), false)
 	if err != nil {
 		log.Print(err)
 		return
@@ -574,6 +703,26 @@ func getAccountName(w http.ResponseWriter, r *http.Request) {
 		"imageURL": imageURL,
 	}
 
+	transratedPosts := []Post{}
+	for _, post := range posts {
+		var comments []Comment
+		for _, comment := range post.Comments {
+			comments = append(comments, comment.Comment)
+		}
+		newPost := Post{
+			ID:           post.Post.ID,
+			UserID:       post.Post.UserID,
+			Body:         post.Post.Body,
+			Mime:         post.Post.Mime,
+			CreatedAt:    post.Post.CreatedAt,
+			CommentCount: post.Comment_count,
+			Comments:     comments,
+			User:         post.User,
+			CSRFToken:    post.Csrf_token,
+		}
+		transratedPosts = append(transratedPosts, newPost)
+	}
+
 	template.Must(template.New("layout.html").Funcs(fmap).ParseFiles(
 		getTemplPath("layout.html"),
 		getTemplPath("user.html"),
@@ -586,7 +735,7 @@ func getAccountName(w http.ResponseWriter, r *http.Request) {
 		CommentCount   int
 		CommentedCount int
 		Me             User
-	}{posts, user, postCount, commentCount, commentedCount, me})
+	}{transratedPosts, user, postCount, commentCount, commentedCount, me})
 }
 
 func getPosts(w http.ResponseWriter, r *http.Request) {
@@ -607,14 +756,27 @@ func getPosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := []Post{}
-	err = db.Select(&results, "SELECT `id`, `user_id`, `body`, `mime`, `created_at` FROM `posts` WHERE `created_at` <= ? ORDER BY `created_at` DESC", t.Format(ISO8601Format))
+	results := []PostRaw{}
+	err = db.Select(&results, `
+			SELECT p.id         AS post_id,
+                   p.user_id    AS user_id,
+                   p.mime,
+                   p.body,
+                   p.created_at AS post_created_at,
+                   u.account_name,
+                   u.created_at AS user_created_at
+            FROM posts as p FORCE INDEX (posts_created_at_idx)
+                     JOIN users as u ON p.user_id = u.id
+            WHERE p.created_at <= ?
+              AND u.del_flg = 0
+            ORDER BY p.created_at DESC
+            LIMIT ?`, t.Format(ISO8601Format), postsPerPage)
 	if err != nil {
 		log.Print(err)
 		return
 	}
 
-	posts, err := makePosts(results, getCSRFToken(r), false)
+	posts, err := makePosts2(results, getCSRFToken(r), false)
 	if err != nil {
 		log.Print(err)
 		return
@@ -629,10 +791,30 @@ func getPosts(w http.ResponseWriter, r *http.Request) {
 		"imageURL": imageURL,
 	}
 
+	transratedPosts := []Post{}
+	for _, post := range posts {
+		var comments []Comment
+		for _, comment := range post.Comments {
+			comments = append(comments, comment.Comment)
+		}
+		newPost := Post{
+			ID:           post.Post.ID,
+			UserID:       post.Post.UserID,
+			Body:         post.Post.Body,
+			Mime:         post.Post.Mime,
+			CreatedAt:    post.Post.CreatedAt,
+			CommentCount: post.Comment_count,
+			Comments:     comments,
+			User:         post.User,
+			CSRFToken:    post.Csrf_token,
+		}
+		transratedPosts = append(transratedPosts, newPost)
+	}
+
 	template.Must(template.New("posts.html").Funcs(fmap).ParseFiles(
 		getTemplPath("posts.html"),
 		getTemplPath("post.html"),
-	)).Execute(w, posts)
+	)).Execute(w, transratedPosts)
 }
 
 func getPostsID(w http.ResponseWriter, r *http.Request) {
@@ -643,14 +825,30 @@ func getPostsID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := []Post{}
-	err = db.Select(&results, "SELECT * FROM `posts` WHERE `id` = ?", pid)
+	results := []PostRaw{}
+
+	err = db.Select(&results,
+		`SELECT p.id         AS post_id,
+                   p.user_id    AS user_id,
+                   p.mime,
+                   p.body,
+                   p.created_at AS post_created_at,
+                   u.account_name,
+                   u.created_at AS user_created_at
+            FROM posts as p FORCE INDEX (PRIMARY)
+                     JOIN users as u ON p.user_id = u.id
+            WHERE p.id = ?
+              AND u.del_flg = 0
+            ORDER BY p.created_at DESC
+            LIMIT ?`,
+		pid,
+		postsPerPage)
 	if err != nil {
 		log.Print(err)
 		return
 	}
 
-	posts, err := makePosts(results, getCSRFToken(r), true)
+	posts, err := makePosts2(results, getCSRFToken(r), true)
 	if err != nil {
 		log.Print(err)
 		return
@@ -669,6 +867,22 @@ func getPostsID(w http.ResponseWriter, r *http.Request) {
 		"imageURL": imageURL,
 	}
 
+	var comments []Comment
+	for _, comment := range p.Comments {
+		comments = append(comments, comment.Comment)
+	}
+	transratedPost := Post{
+		ID:           p.Post.ID,
+		UserID:       p.Post.UserID,
+		Body:         p.Post.Body,
+		Mime:         p.Post.Mime,
+		CreatedAt:    p.Post.CreatedAt,
+		CommentCount: p.Comment_count,
+		Comments:     comments,
+		User:         p.User,
+		CSRFToken:    p.Csrf_token,
+	}
+
 	template.Must(template.New("layout.html").Funcs(fmap).ParseFiles(
 		getTemplPath("layout.html"),
 		getTemplPath("post_id.html"),
@@ -676,7 +890,7 @@ func getPostsID(w http.ResponseWriter, r *http.Request) {
 	)).Execute(w, struct {
 		Post Post
 		Me   User
-	}{p, me})
+	}{transratedPost, me})
 }
 
 func postIndex(w http.ResponseWriter, r *http.Request) {
@@ -758,6 +972,8 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/posts/"+strconv.FormatInt(pid, 10), http.StatusFound)
 }
 
+const IMAGE_FILE_PATH = "/home/isucon/private_isu/webapp/public/images"
+
 func getImage(w http.ResponseWriter, r *http.Request) {
 	pidStr := r.PathValue("id")
 	pid, err := strconv.Atoi(pidStr)
@@ -766,14 +982,27 @@ func getImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ext := r.PathValue("ext")
+
+	// 画像ファイルのパス
+	imageFilePath := fmt.Sprintf("%s/%d.%s", IMAGE_FILE_PATH, pid, ext)
+
+	// 画像がファイルシステムに存在するかチェック
+	if _, err := os.Stat(imageFilePath); os.IsNotExist(err) {
+		// DBから取得
+		var post Post
+		err = db.Get(&post, "SELECT imgdata, mime FROM posts WHERE id = ?", pid)
+
+		// 画像をファイルに保存
+		err = os.WriteFile(imageFilePath, post.Imgdata, 0644)
+	}
+
 	post := Post{}
 	err = db.Get(&post, "SELECT * FROM `posts` WHERE `id` = ?", pid)
 	if err != nil {
 		log.Print(err)
 		return
 	}
-
-	ext := r.PathValue("ext")
 
 	if ext == "jpg" && post.Mime == "image/jpeg" ||
 		ext == "png" && post.Mime == "image/png" ||
