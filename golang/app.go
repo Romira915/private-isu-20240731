@@ -246,13 +246,13 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 }
 
 type CommentRaw struct {
-	Id                 int       `db:"id"`
-	Post_id            int       `db:"post_id"`
-	User_id            int       `db:"user_id"`
-	Comment            string    `db:"comment"`
-	Comment_created_at time.Time `db:"created_at"`
-	Account_name       string    `db:"account_name"`
-	User_created_at    time.Time `db:"user_created_at"`
+	Id               int       `db:"id"`
+	PostID           int       `db:"post_id"`
+	UserID           int       `db:"user_id"`
+	Comment          string    `db:"comment"`
+	CommentCreatedAt time.Time `db:"created_at"`
+	AccountName      string    `db:"account_name"`
+	UserCreatedAt    time.Time `db:"user_created_at"`
 }
 
 func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]GrantedInfoPost, error) {
@@ -355,23 +355,23 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 
 		var grantedUserComments []GrantedUserComment
 		for _, comment_raw := range comments_raw {
-			if post.ID == comment_raw.Post_id {
+			if post.ID == comment_raw.PostID {
 				comment := Comment{
 					ID:        comment_raw.Id,
-					PostID:    comment_raw.Post_id,
-					UserID:    comment_raw.User_id,
+					PostID:    comment_raw.PostID,
+					UserID:    comment_raw.UserID,
 					Comment:   comment_raw.Comment,
-					CreatedAt: comment_raw.Comment_created_at,
+					CreatedAt: comment_raw.CommentCreatedAt,
 					User: User{
-						ID:          comment_raw.User_id,
-						AccountName: comment_raw.Account_name,
-						CreatedAt:   comment_raw.User_created_at,
+						ID:          comment_raw.UserID,
+						AccountName: comment_raw.AccountName,
+						CreatedAt:   comment_raw.UserCreatedAt,
 					},
 				}
 				user := User{
-					ID:          comment_raw.User_id,
-					AccountName: comment_raw.Account_name,
-					CreatedAt:   comment_raw.User_created_at,
+					ID:          comment_raw.UserID,
+					AccountName: comment_raw.AccountName,
+					CreatedAt:   comment_raw.UserCreatedAt,
 				}
 
 				grantedUserComments = append(grantedUserComments, GrantedUserComment{
