@@ -288,12 +288,12 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 
 		db.Select(&comments_raw, query, args...)
 	} else {
-		query, args, err := sqlx.In(`SELECT ranked_comments.id,
-                           ranked_comments.post_id,
-                           ranked_comments.user_id,
-                           ranked_comments.comment,
+		query, args, err := sqlx.In(`SELECT ranked_comments.id AS id,
+                           ranked_comments.post_id AS post_id,
+                           ranked_comments.user_id AS user_id,
+                           ranked_comments.comment AS comment,
                            ranked_comments.created_at AS comment_created_at,
-                           u.account_name,
+                           u.account_name AS account_name,
                            u.created_at AS user_created_at
                     FROM (SELECT *,
                                  ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY created_at DESC) AS row_num
