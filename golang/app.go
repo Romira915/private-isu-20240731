@@ -58,7 +58,7 @@ type Post struct {
 }
 
 type PostRaw struct {
-	PostID          int       `db:"id"`
+	PostID          int       `db:"post_id"`
 	UserID          int       `db:"user_id"`
 	Body            string    `db:"body"`
 	Mime            string    `db:"mime"`
@@ -554,7 +554,7 @@ func getIndex(w http.ResponseWriter, r *http.Request) {
 	results := []PostRaw{}
 
 	err := db.Select(&results,
-		`SELECT p.id AS post_id, p.user_id AS user_id, p.body , p.mime, p.created_at AS post_created_at, u.account_name, u.created_at AS user_created_at
+		`SELECT p.id AS post_id, p.user_id AS user_id, p.body, p.mime, p.created_at AS post_created_at, u.account_name, u.created_at AS user_created_at
 		FROM posts as p FORCE INDEX (posts_created_at_idx) 
 			JOIN users as u ON p.user_id = u.id
 		WHERE u.del_flg = 0
