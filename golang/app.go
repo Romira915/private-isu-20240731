@@ -1007,6 +1007,7 @@ func getImage(w http.ResponseWriter, r *http.Request) {
 
 	// 画像がファイルシステムに存在するかチェック
 	if _, err := os.Stat(imageFilePath); os.IsNotExist(err) {
+		log.Print("画像がファイルシステムに存在しない")
 		// DBから取得
 		var post Post
 		err = db.Get(&post, "SELECT imgdata, mime FROM posts WHERE id = ?", pid)
