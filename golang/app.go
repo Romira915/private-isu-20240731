@@ -261,7 +261,6 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 	for _, post_raw := range post_raws {
 		post_ids = append(post_ids, post_raw.PostID)
 	}
-	log.Print(post_ids)
 
 	if allComments {
 		query, args, err := sqlx.In(`SELECT ranked_comments.id,
@@ -321,11 +320,10 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 			return nil, err
 		}
 	}
-	log.Print(len(comments_raw))
 
 	var comment_count_raw []struct {
-		post_id       int `db:"post_id"`
-		comment_count int `db:"comment_count"`
+		Post_id       int `db:"post_id"`
+		Comment_count int `db:"comment_count"`
 	}
 	query, args, err := sqlx.In(`SELECT post_id, COUNT(*) AS comment_count
             FROM comments
