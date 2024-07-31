@@ -346,6 +346,7 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 
 	var posts []GrantedInfoPost
 	for _, post_raw := range post_raws {
+		log.Print(post_raw.PostID)
 		post := Post{
 			ID:           post_raw.PostID,
 			UserID:       post_raw.UserID,
@@ -595,7 +596,6 @@ func getIndex(w http.ResponseWriter, r *http.Request) {
 		for _, comment := range post.Comments {
 			comments = append(comments, comment.Comment)
 		}
-		log.Print(post.Post.ID)
 		newPost := Post{
 			ID:           post.Post.ID,
 			UserID:       post.Post.UserID,
