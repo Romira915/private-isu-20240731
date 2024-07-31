@@ -250,7 +250,7 @@ type CommentRaw struct {
 	PostID           int       `db:"post_id"`
 	UserID           int       `db:"user_id"`
 	Comment          string    `db:"comment"`
-	CommentCreatedAt time.Time `db:"created_at"`
+	CommentCreatedAt time.Time `db:"comment_created_at"`
 	AccountName      string    `db:"account_name"`
 	UserCreatedAt    time.Time `db:"user_created_at"`
 }
