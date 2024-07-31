@@ -286,7 +286,11 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 
 		query = db.Rebind(query)
 
-		db.Select(&comments_raw, query, args...)
+		err = db.Select(&comments_raw, query, args...)
+		if err != nil {
+			log.Print(err)
+			return nil, err
+		}
 	} else {
 		query, args, err := sqlx.In(`SELECT ranked_comments.id AS id,
                            ranked_comments.post_id AS post_id,
@@ -336,7 +340,11 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 
 	query = db.Rebind(query)
 
-	db.Select(&comment_count_raw, query, args...)
+	err = db.Select(&comment_count_raw, query, args...)
+	if err != nil {
+		log.Print(err)
+		return nil, err
+	}
 
 	var posts []GrantedInfoPost
 	for _, post_raw := range post_raws {
