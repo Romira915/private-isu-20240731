@@ -346,7 +346,6 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 
 	var posts []GrantedInfoPost
 	for _, post_raw := range post_raws {
-		log.Print(post_raw.PostID)
 		post := Post{
 			ID:           post_raw.PostID,
 			UserID:       post_raw.UserID,
@@ -390,15 +389,15 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 					User:    user,
 				})
 			}
-
-			posts = append(posts, GrantedInfoPost{
-				Post:          post,
-				Comment_count: len(comment_count_raw),
-				Comments:      grantedUserComments,
-				User:          user,
-				Csrf_token:    csrfToken,
-			})
 		}
+
+		posts = append(posts, GrantedInfoPost{
+			Post:          post,
+			Comment_count: len(comment_count_raw),
+			Comments:      grantedUserComments,
+			User:          user,
+			Csrf_token:    csrfToken,
+		})
 	}
 
 	return posts, nil
