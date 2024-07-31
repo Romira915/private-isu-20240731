@@ -15,7 +15,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
+	"crypto/sha512"
+	"encoding/hex"
+	"fmt"
+	
 	"github.com/bradfitz/gomemcache/memcache"
 	gsm "github.com/bradleypeabody/gorilla-sessions-memcache"
 	"github.com/go-chi/chi/v5"
@@ -140,12 +143,10 @@ func escapeshellarg(arg string) string {
 }
 
 func digest(src string) string {
-	// opensslのバージョンによっては (stdin)= というのがつくので取る
-	out, err := exec.Command("/bin/bash", "-c", `printf "%s" `+escapeshellarg(src)+` | openssl dgst -sha512 | sed 's/^.*= //'`).Output()
-	if err != nil {
-		log.Print(err)
-		return ""
-	}
+	hasher :=sha512.New()
+	hasher.Write([]byte(src))
+	return hex.EncodeToString(hasher.Sum(nil))
+}
 
 	return strings.TrimSuffix(string(out), "\n")
 }
