@@ -77,16 +77,16 @@ type Comment struct {
 }
 
 type GrantedInfoPost struct {
-	post          Post
-	comment_count int
-	comments      []GrantedUserComment
-	user          User
-	csrf_token    string
+	Post          Post
+	Comment_count int
+	Comments      []GrantedUserComment
+	User          User
+	Csrf_token    string
 }
 
 type GrantedUserComment struct {
-	comment Comment
-	user    User
+	Comment Comment
+	User    User
 }
 
 func init() {
@@ -371,17 +371,17 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 				}
 
 				grantedUserComments = append(grantedUserComments, GrantedUserComment{
-					comment: comment,
-					user:    user,
+					Comment: comment,
+					User:    user,
 				})
 			}
 
 			posts = append(posts, GrantedInfoPost{
-				post:          post,
-				comment_count: len(comment_count_raw),
-				comments:      grantedUserComments,
-				user:          user,
-				csrf_token:    csrfToken,
+				Post:          post,
+				Comment_count: len(comment_count_raw),
+				Comments:      grantedUserComments,
+				User:          user,
+				Csrf_token:    csrfToken,
 			})
 		}
 	}
@@ -578,19 +578,19 @@ func getIndex(w http.ResponseWriter, r *http.Request) {
 	transratedPosts := []Post{}
 	for _, post := range posts {
 		var comments []Comment
-		for _, comment := range post.comments {
-			comments = append(comments, comment.comment)
+		for _, comment := range post.Comments {
+			comments = append(comments, comment.Comment)
 		}
 		newPost := Post{
-			ID:           post.post.ID,
-			UserID:       post.post.UserID,
-			Body:         post.post.Body,
-			Mime:         post.post.Mime,
-			CreatedAt:    post.post.CreatedAt,
-			CommentCount: post.comment_count,
+			ID:           post.Post.ID,
+			UserID:       post.Post.UserID,
+			Body:         post.Post.Body,
+			Mime:         post.Post.Mime,
+			CreatedAt:    post.Post.CreatedAt,
+			CommentCount: post.Comment_count,
 			Comments:     comments,
-			User:         post.user,
-			CSRFToken:    post.csrf_token,
+			User:         post.User,
+			CSRFToken:    post.Csrf_token,
 		}
 		transratedPosts = append(transratedPosts, newPost)
 	}
