@@ -345,8 +345,8 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 		}
 		user := User{
 			ID:          post_raw.UserID,
-			AccountName: post_raw.account_name,
-			CreatedAt:   post_raw.user_created_at,
+			AccountName: post_raw.Account_name,
+			CreatedAt:   post_raw.User_created_at,
 		}
 
 		var grantedUserComments []GrantedUserComment
