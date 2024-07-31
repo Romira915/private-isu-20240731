@@ -245,16 +245,18 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 	return posts, nil
 }
 
+type CommentRaw struct {
+	Id                 int       `db:"id"`
+	Post_id            int       `db:"post_id"`
+	User_id            int       `db:"user_id"`
+	Comment            string    `db:"comment"`
+	Comment_created_at time.Time `db:"created_at"`
+	Account_name       string
+	User_created_at    time.Time `db:"user_created_at"`
+}
+
 func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]GrantedInfoPost, error) {
-	var comments_raw []struct {
-		Id                 int       `db:"id"`
-		Post_id            int       `db:"post_id"`
-		User_id            int       `db:"user_id"`
-		Comment            string    `db:"comment"`
-		Comment_created_at time.Time `db:"created_at"`
-		Account_name       string
-		User_created_at    time.Time `db:"user_created_at"`
-	}
+	comments_raw := []CommentRaw{}
 	var post_ids []int
 	for _, post_raw := range post_raws {
 		post_ids = append(post_ids, post_raw.PostID)
