@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -670,6 +671,8 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/posts/"+strconv.FormatInt(pid, 10), http.StatusFound)
 }
 
+const IMAGE_FILE_PATH = "/home/isucon/private_isu/webapp/public/images"
+
 func getImage(w http.ResponseWriter, r *http.Request) {
 	pidStr := r.PathValue("id")
 	pid, err := strconv.Atoi(pidStr)
@@ -678,14 +681,31 @@ func getImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ext := r.PathValue("ext")
+
+	// 画像ファイルが存在しない場合はDBから取得して保存
+	imageFilePath := fmt.Sprintf("%s/%d.%s", IMAGE_FILE_PATH, pid, ext)
+
+	if _, err := os.Stat(imageFilePath); os.IsNotExist(err) {
+		var imageData []byte
+		query := "SELECT imgdata FROM posts WHERE id = ?"
+		row := db.QueryRow(query, pid)
+
+		if err := row.Scan(&imageData); err != nil {
+			return
+		}
+
+		if err := ioutil.WriteFile(imageFilePath, imageData, 0644); err != nil {
+			return
+		}
+	}
+
 	post := Post{}
 	err = db.Get(&post, "SELECT * FROM `posts` WHERE `id` = ?", pid)
 	if err != nil {
 		log.Print(err)
 		return
 	}
-
-	ext := r.PathValue("ext")
 
 	if ext == "jpg" && post.Mime == "image/jpeg" ||
 		ext == "png" && post.Mime == "image/png" ||
