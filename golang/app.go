@@ -310,6 +310,7 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 
 		db.Select(&comments_raw, query, args...)
 	}
+	log.Print(comments_raw)
 
 	var comment_count_raw []struct {
 		post_id       int `db:"post_id"`
