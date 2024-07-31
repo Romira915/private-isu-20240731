@@ -257,9 +257,9 @@ type CommentRaw struct {
 
 func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]GrantedInfoPost, error) {
 	comments_raw := []CommentRaw{}
-	var post_ids []string
+	var post_ids []int
 	for _, post_raw := range post_raws {
-		post_ids = append(post_ids, strconv.Itoa(post_raw.PostID))
+		post_ids = append(post_ids, post_raw.PostID)
 	}
 	log.Print(post_ids)
 
@@ -311,7 +311,11 @@ func makePosts2(post_raws []PostRaw, csrfToken string, allComments bool) ([]Gran
 
 		query = db.Rebind(query)
 
-		db.Select(&comments_raw, query, args...)
+		err = db.Select(&comments_raw, query, args...)
+		if err != nil {
+			log.Print(err)
+			return nil, err
+		}
 	}
 	log.Print(len(comments_raw))
 
