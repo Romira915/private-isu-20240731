@@ -1010,9 +1010,17 @@ func getImage(w http.ResponseWriter, r *http.Request) {
 		// DBから取得
 		var post Post
 		err = db.Get(&post, "SELECT imgdata, mime FROM posts WHERE id = ?", pid)
+		if err != nil {
+			log.Print(err)
+			return
+		}
 
 		// 画像をファイルに保存
 		err = os.WriteFile(imageFilePath, post.Imgdata, 0644)
+		if err != nil {
+			log.Print(err)
+			return
+		}
 	}
 
 	post := Post{}
